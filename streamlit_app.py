@@ -92,6 +92,10 @@ def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col,
     
     return pd.DataFrame(results)
 
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [수정됨] analyze_fire_pump_point 함수 ★
+# ★ (동적 Key 대신 고정 Key를 반환하도록 수정) ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
     if target_q <= 0 or target_h <= 0: return pd.DataFrame()
     results = []
@@ -109,7 +113,17 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
             cond2_ok = (not np.isnan(interp_h_overload)) and (interp_h_overload >= (0.65 * target_h))
             if cond1_ok and cond2_ok:
                 interp_kw = np.interp(target_q, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
-                results.append({"모델명": model, "정격 예상 양정": f"{interp_h_rated:.2f}", "체절 양정 (≤{1.4*target_h:.2f})": f"{h_churn:.2f}", "최대운전 양정 (≥{0.65*target_h:.2f})": f"{interp_h_overload:.2f}", "예상 동력(kW)": f"{interp_kw:.2f}", "선정 가능": "✅"})
+                # [수정] 동적 Key를 고정 Key로 변경
+                results.append({
+                    "모델명": model, 
+                    "정격 예상 양정": f"{interp_h_rated:.2f}", 
+                    "체절 양정 (예상)": f"{h_churn:.2f}",
+                    "체절 양정 (기준)": f"≤{1.4*target_h:.2f}",
+                    "최대운전 양정 (예상)": f"{interp_h_overload:.2f}",
+                    "최대운전 양정 (기준)": f"≥{0.65*target_h:.2f}",
+                    "예상 동력(kW)": f"{interp_kw:.2f}", 
+                    "선정 가능": "✅"
+                })
                 continue
 
         h_values_rev = model_df[h_col].values[::-1]
@@ -128,7 +142,17 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                     correction_pct = (1 - (q_required / target_q)) * 100
                     status_text = f"유량 {correction_pct:.1f}% 보정 전제 사용 가능"
                     interp_kw_corr = np.interp(q_required, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
-                    results.append({"모델명": model, "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", "체절 양정 (≤{1.4*target_h:.2f})": f"{h_churn:.2f}", "최대운전 양정 (≥{0.65*target_h:.2f})": f"{interp_h_overload_corr:.2f}", "예상 동력(kW)": f"{interp_kw_corr:.2f}", "선정 가능": status_text})
+                    # [수정] 동적 Key를 고정 Key로 변경
+                    results.append({
+                        "모델명": model, 
+                        "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
+                        "체절 양정 (예상)": f"{h_churn:.2f}",
+                        "체절 양정 (기준)": f"≤{1.4*target_h:.2f}",
+                        "최대운전 양정 (예상)": f"{interp_h_overload_corr:.2f}",
+                        "최대운전 양정 (기준)": f"≥{0.65*target_h:.2f}",
+                        "예상 동력(kW)": f"{interp_kw_corr:.2f}", 
+                        "선정 가능": status_text
+                    })
     
     return pd.DataFrame(results)
 
@@ -223,9 +247,6 @@ def perform_validation_analysis(df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col
         all_results[model] = { 'summary': pd.DataFrame(model_summary), 'samples': interpolated_y_samples }
     return all_results
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [수정됨] parse_selection_table 함수 ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def parse_selection_table(df_selection_table):
     """
     사용자가 업로드한 'XRF 모델 선정표...' (CSV 또는 Excel) 파일의 특정 구조를 파싱합니다.
@@ -287,8 +308,6 @@ def parse_selection_table(df_selection_table):
     except Exception as e:
         st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
         return pd.DataFrame()
-# ★ (수정 끝) ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 def display_validation_output(model, validation_data, analysis_type, df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col):
     if model not in validation_data or validation_data[model]['summary'].empty:
@@ -310,7 +329,7 @@ def display_validation_output(model, validation_data, analysis_type, df_r, df_d,
     for col in numeric_cols: model_summary_df[col] = pd.to_numeric(model_summary_df[col], errors='coerce')
     
     fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 상한'], fill=None, mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 상한'))
-    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 상한'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 하한'))
+    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 하한'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 하한'))
     
     model_d_df_vis = df_d[(df_d[m_d] == model) & (df_d[y_d_col].notna())]; test_ids_vis = model_d_df_vis[test_id_col].unique()
     for test_id in test_ids_vis:
@@ -622,7 +641,7 @@ if uploaded_file:
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         # ★ 3. '선정표 검토 (AI)' 탭 로직 (신규 추가) ★
-        # ★   (시트 이름 'XRF 모델 선정표_품질검토본_20250110'을 먼저 시도하도록 수정됨) ★
+        # ★   (KeyError 해결을 위해 고정 Key를 사용하도록 수정) ★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         with tabs[5]:
             st.subheader("🔥 XRF 모델 선정표 자동 검토 (AI)")
@@ -640,7 +659,6 @@ if uploaded_file:
                 
                 if review_excel_file:
                     
-                    # [수정] 사용자가 언급한 특정 시트 이름을 먼저 시도합니다.
                     sheet_to_try = 'XRF 모델 선정표_품질검토본_20250110'
                     try:
                         df_selection_excel = pd.read_excel(review_excel_file, sheet_name=sheet_to_try, header=None)
@@ -648,7 +666,6 @@ if uploaded_file:
                     except Exception:
                         st.warning(f"'{sheet_to_try}' 시트를 찾을 수 없습니다. 엑셀 파일의 첫 번째 시트를 대신 읽습니다.")
                         try:
-                            # 특정 시트가 없으면 첫 번째 시트로 Fallback
                             df_selection_excel = pd.read_excel(review_excel_file, sheet_name=0, header=None)
                             st.info("첫 번째 시트를 로드했습니다.")
                         except Exception as e_first:
@@ -656,11 +673,11 @@ if uploaded_file:
                             df_selection_excel = None
 
                     if df_selection_excel is not None:
-                        # (3) 엑셀 파싱 (기존 parse_selection_table 함수 재사용)
+                        # (3) 엑셀 파싱
                         if 'task_list_df' not in st.session_state or st.session_state.get('review_file_name') != review_excel_file.name:
                             with st.spinner("선정표(Excel) 파일을 분석하여 검토 목록을 생성 중입니다..."):
                                 st.session_state.task_list_df = parse_selection_table(df_selection_excel)
-                                st.session_state.review_file_name = review_excel_file.name # 새 파일 감지용
+                                st.session_state.review_file_name = review_excel_file.name
                         
                         task_df = st.session_state.task_list_df
                         
@@ -675,86 +692,21 @@ if uploaded_file:
                             if st.button("🚀 소방 성능 기준 검토 실행"):
                                 with st.spinner(f"{len(task_df)}개 항목을 'reference data'와 비교 검토 중입니다... (1~2분 소요)"):
                                     results = []
-                                    all_ref_models = df_r[m_r].unique() # 모델 존재 여부 확인용 (빠른 속도)
+                                    all_ref_models = df_r[m_r].unique()
                                     
                                     for _, row in task_df.iterrows():
                                         model = row['모델명']
                                         q = row['요구 유량 (Q)']
                                         h = row['요구 양정 (H)']
                                         
-                                        # 기준 데이터(df_r)에 모델이 없는 경우
                                         if model not in all_ref_models:
                                             result_detail = {
                                                 "결과": "❌ 모델 없음",
                                                 "상세": "Reference 데이터에 해당 모델명이 없습니다."
                                             }
                                         else:
-                                            # 소방 성능 분석 실행
                                             op_result_df = analyze_fire_pump_point(df_r, [model], q, h, m_r, q_col_total, h_col_total, k_col_total)
                                             
                                             if not op_result_df.empty:
-                                                # 분석 성공 (기준 통과)
+                                                # [수정] 고정 Key로 결과값을 조회합니다.
                                                 res_row = op_result_df.iloc[0]
-                                                result_detail = {
-                                                    "결과": res_row['선정 가능'], # "✅" 또는 "유량 X% 보정..."
-                                                    "정격 양정": res_row['정격 예상 양정'],
-                                                    "체절 양정": res_row[f'체절 양정 (≤{1.4*h:.2f})'],
-                                                    "최대 양정": res_row[f'최대운전 양정 (≥{0.65*h:.2f})'],
-                                                    "예상 동력": res_row['예상 동력(kW)']
-                                                }
-                                            else:
-                                                # 분석 실패 (모델은 있으나 3점 기준 미달 또는 유량 범위 이탈)
-                                                # '기계' 모드로 단순 체크하여 힌트 제공
-                                                mech_check_df = analyze_operating_point(df_r, [model], q, h, m_r, q_col_total, h_col_total, k_col_total)
-                                                if not mech_check_df.empty:
-                                                    details = f"정격점은 만족하나 3점(체절/최대) 기준 미달. (예상양정: {mech_check_df.iloc[0]['예상 양정']})"
-                                                else:
-                                                    details = "요구 성능을 만족하는 운전점을 찾을 수 없음 (유량 범위 이탈 등)"
-                                                    
-                                                result_detail = {
-                                                    "결과": "❌ 사용 불가",
-                                                    "상세": details
-                                                }
-                                    
-                                        base_info = {
-                                            "선정 모델": model,
-                                            "요구 유량(Q)": q,
-                                            "요구 양정(H)": h
-                                        }
-                                        base_info.update(result_detail)
-                                        results.append(base_info)
-                                    
-                                st.session_state.review_results_df = pd.DataFrame(results)
-                                st.success("선정표 검토 완료!")
-
-                # (5) 결과 표시
-                if 'review_results_df' in st.session_state:
-                    st.markdown("---")
-                    st.markdown("### 📊 검토 결과 요약")
-                    results_df = st.session_state.review_results_df
-                    
-                    # 결과 필터링
-                    failed_df = results_df[results_df['결과'].str.contains("❌")]
-                    warning_df = results_df[~results_df['결과'].str.contains("❌|✅")] # "보정" 등
-                    success_df = results_df[results_df['결과'] == "✅"]
-                    
-                    res_col1, res_col2, res_col3, res_col4 = st.columns(4)
-                    res_col1.metric("총 검토 항목", len(results_df))
-                    res_col2.metric("❌ 선정 오류", len(failed_df), delta_color="inverse")
-                    res_col3.metric("⚠️ 보정 필요", len(warning_df), delta_color="off")
-                    res_col4.metric("✅ 선정 가능", len(success_df))
-                    
-                    st.markdown("#### ❌ 선정 오류 목록")
-                    if failed_df.empty:
-                        st.info("선정 오류로 판단된 항목이 없습니다.")
-                    else:
-                        st.dataframe(failed_df.set_index("선정 모델"), use_container_width=True)
-                    
-                    st.markdown("#### ⚠️ 보정 필요 목록")
-                    if warning_df.empty:
-                        st.info("유량 보정이 필요한 항목이 없습니다.")
-                    else:
-                        st.dataframe(warning_df.set_index("선정 모델"), use_container_width=True)
-                        
-                    with st.expander("✅ 전체 검토 결과 보기 (성공/실패/보정 포함)"):
-                        st.dataframe(results_df.set_index("선정 모델"), use_container_width=True)
