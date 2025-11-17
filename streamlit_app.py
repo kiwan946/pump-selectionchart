@@ -223,6 +223,9 @@ def perform_validation_analysis(df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col
         all_results[model] = { 'summary': pd.DataFrame(model_summary), 'samples': interpolated_y_samples }
     return all_results
 
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [수정됨] parse_selection_table 함수 ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def parse_selection_table(df_selection_table):
     """
     사용자가 업로드한 'XRF 모델 선정표...' (CSV 또는 Excel) 파일의 특정 구조를 파싱합니다.
@@ -258,7 +261,9 @@ def parse_selection_table(df_selection_table):
             h_val_raw = str(df_selection_table.iloc[r_idx, 1])
             if pd.isna(h_val_raw) or h_val_raw == "": continue
             try:
-                h_values[r_idx] = float(h_val_raw)
+                # [수정] '301\n(139.8)' 또는 '301 (139.8)' 형식에서 '301'만 추출
+                h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
+                h_values[r_idx] = float(h_val_clean)
             except (ValueError, TypeError):
                 continue # 유효하지 않은 행 스킵
         
@@ -282,6 +287,8 @@ def parse_selection_table(df_selection_table):
     except Exception as e:
         st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
         return pd.DataFrame()
+# ★ (수정 끝) ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 def display_validation_output(model, validation_data, analysis_type, df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col):
     if model not in validation_data or validation_data[model]['summary'].empty:
@@ -303,7 +310,7 @@ def display_validation_output(model, validation_data, analysis_type, df_r, df_d,
     for col in numeric_cols: model_summary_df[col] = pd.to_numeric(model_summary_df[col], errors='coerce')
     
     fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 상한'], fill=None, mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 상한'))
-    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 하한'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 하한'))
+    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 상한'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 하한'))
     
     model_d_df_vis = df_d[(df_d[m_d] == model) & (df_d[y_d_col].notna())]; test_ids_vis = model_d_df_vis[test_id_col].unique()
     for test_id in test_ids_vis:
