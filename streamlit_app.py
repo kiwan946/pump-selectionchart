@@ -241,6 +241,7 @@ def parse_selection_table(df_selection_table):
         h_values = {}
 
         # 1. 유량(Q) 값 파싱 (11행, 인덱스 10)
+        # iloc[10, c_idx]는 엑셀 기준 11행
         for c_idx in q_col_indices:
             q_val_raw = str(df_selection_table.iloc[10, c_idx])
             if pd.isna(q_val_raw) or q_val_raw == "": continue
@@ -252,6 +253,7 @@ def parse_selection_table(df_selection_table):
                 continue # 유효하지 않은 열 스킵
         
         # 2. 양정(H) 값 파싱 (B열, 인덱스 1)
+        # iloc[r_idx, 1]는 엑셀 기준 B열
         for r_idx in h_row_indices:
             h_val_raw = str(df_selection_table.iloc[r_idx, 1])
             if pd.isna(h_val_raw) or h_val_raw == "": continue
@@ -263,6 +265,7 @@ def parse_selection_table(df_selection_table):
         # 3. 교차 지점의 모델명 파싱
         for r_idx in h_values:
             for c_idx in q_values:
+                # iloc[r_idx, c_idx]는 엑셀 기준 [16행, E열], [16행, H열]...
                 model_name = str(df_selection_table.iloc[r_idx, c_idx]).strip()
                 
                 # 'nan', '미선정...' 등이 아닌 유효한 모델명인지 확인
@@ -277,7 +280,7 @@ def parse_selection_table(df_selection_table):
         return pd.DataFrame(tasks)
     
     except Exception as e:
-        st.error(f"선정표 파싱 중 심각한 오류 발생: {e}")
+        st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
         return pd.DataFrame()
 
 def display_validation_output(model, validation_data, analysis_type, df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col):
@@ -339,7 +342,7 @@ def display_validation_output(model, validation_data, analysis_type, df_r, df_d,
             st.markdown("---")
 
 # --- 메인 애플리케이션 로직 ---
-uploaded_file = st.file_uploader("Excel 파일 업로드 (.xlsx 또는 .xlsm)", type=["xlsx", "xlsm"])
+uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (reference data 시트 포함)", type=["xlsx", "xlsm"])
 if uploaded_file:
     m_r, df_r_orig = load_sheet(uploaded_file, "reference data"); m_c, df_c_orig = load_sheet(uploaded_file, "catalog data"); m_d, df_d_orig = load_sheet(uploaded_file, "deviation data")
     if df_r_orig.empty: st.error("오류: 'reference data' 시트를 찾을 수 없거나 '모델명' 관련 컬럼이 없습니다. 파일을 확인해주세요.")
@@ -612,7 +615,7 @@ if uploaded_file:
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         # ★ 3. '선정표 검토 (AI)' 탭 로직 (신규 추가) ★
-        # ★   (CSV -> Excel로 수정됨)         ★
+        # ★   (시트 이름 'XRF 모델 선정표_품질검토본_20250110'을 먼저 시도하도록 수정됨) ★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         with tabs[5]:
             st.subheader("🔥 XRF 모델 선정표 자동 검토 (AI)")
@@ -626,30 +629,36 @@ if uploaded_file:
             else:
                 st.info("검토 대상인 'XRF 모델 선정표...' 엑셀 파일을 업로드하세요.")
                 
-                # [수정] CSV -> Excel 파일 업로더로 변경
-                review_excel_file = st.file_uploader("선정표 Excel 파일 업로드 (.xlsx, .xlsm)", type=["xlsx", "xlsm"], key="review_excel")
+                review_excel_file = st.file_uploader("2. 선정표 Excel 파일 업로드 (.xlsx, .xlsm)", type=["xlsx", "xlsm"], key="review_excel")
                 
                 if review_excel_file:
+                    
+                    # [수정] 사용자가 언급한 특정 시트 이름을 먼저 시도합니다.
+                    sheet_to_try = 'XRF 모델 선정표_품질검토본_20250110'
                     try:
-                        # 엑셀 파일을 'header=None'으로 읽어와서 원본 셀 위치를 그대로 사용
-                        # 엑셀 파일은 기본적으로 첫 번째 시트를 읽음.
-                        df_selection_excel = pd.read_excel(review_excel_file, header=None)
-                    except Exception as e_excel:
-                        st.error(f"Excel 파일 로딩에 실패했습니다: {e_excel}")
-                        df_selection_excel = None
+                        df_selection_excel = pd.read_excel(review_excel_file, sheet_name=sheet_to_try, header=None)
+                        st.success(f"'{sheet_to_try}' 시트를 성공적으로 로드했습니다.")
+                    except Exception:
+                        st.warning(f"'{sheet_to_try}' 시트를 찾을 수 없습니다. 엑셀 파일의 첫 번째 시트를 대신 읽습니다.")
+                        try:
+                            # 특정 시트가 없으면 첫 번째 시트로 Fallback
+                            df_selection_excel = pd.read_excel(review_excel_file, sheet_name=0, header=None)
+                            st.info("첫 번째 시트를 로드했습니다.")
+                        except Exception as e_first:
+                            st.error(f"Excel 파일 로딩에 실패했습니다: {e_first}")
+                            df_selection_excel = None
 
                     if df_selection_excel is not None:
                         # (3) 엑셀 파싱 (기존 parse_selection_table 함수 재사용)
-                        # 파싱 함수는 DataFrame을 인자로 받으므로 CSV든 Excel이든 동일하게 작동
                         if 'task_list_df' not in st.session_state or st.session_state.get('review_file_name') != review_excel_file.name:
                             with st.spinner("선정표(Excel) 파일을 분석하여 검토 목록을 생성 중입니다..."):
                                 st.session_state.task_list_df = parse_selection_table(df_selection_excel)
-                                st.session_state.review_file_name = review_excel_file.name # 새 파일 감지용 (일반화된 key)
+                                st.session_state.review_file_name = review_excel_file.name # 새 파일 감지용
                         
                         task_df = st.session_state.task_list_df
                         
                         if task_df.empty:
-                            st.error("Excel 파일에서 유효한 검토 대상(모델명, Q, H)을 찾지 못했습니다. 파일 형식을 확인하세요.")
+                            st.error("Excel 파일에서 유효한 검토 대상(모델명, Q, H)을 찾지 못했습니다. 파일 형식이나 시트 이름을 확인하세요.")
                         else:
                             st.markdown(f"**총 {len(task_df)}개**의 검토 대상을 찾았습니다.")
                             with st.expander("파싱된 검토 목록 확인 (Excel 파일 기준)"):
