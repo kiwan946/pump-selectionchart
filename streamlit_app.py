@@ -53,6 +53,7 @@ def process_data(df, q_col, h_col, k_col):
             temp_df[col] = pd.to_numeric(temp_df[col])
     return calculate_efficiency(temp_df, q_col, h_col, k_col)
 
+# [원본] Total 탭의 '단일 운전점 분석'용
 def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
     if target_h <= 0: return pd.DataFrame()
     results = []
@@ -92,10 +93,7 @@ def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col,
     
     return pd.DataFrame(results)
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [수정됨] analyze_fire_pump_point 함수 ★
-# ★ (동적 Key 대신 고정 Key를 반환하도록 수정) ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# [원본] Total 탭의 '단일 운전점 분석'용
 def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
     if target_q <= 0 or target_h <= 0: return pd.DataFrame()
     results = []
@@ -113,7 +111,6 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
             cond2_ok = (not np.isnan(interp_h_overload)) and (interp_h_overload >= (0.65 * target_h))
             if cond1_ok and cond2_ok:
                 interp_kw = np.interp(target_q, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
-                # [수정] 동적 Key를 고정 Key로 변경
                 results.append({
                     "모델명": model, 
                     "정격 예상 양정": f"{interp_h_rated:.2f}", 
@@ -142,7 +139,6 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                     correction_pct = (1 - (q_required / target_q)) * 100
                     status_text = f"유량 {correction_pct:.1f}% 보정 전제 사용 가능"
                     interp_kw_corr = np.interp(q_required, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
-                    # [수정] 동적 Key를 고정 Key로 변경
                     results.append({
                         "모델명": model, 
                         "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
@@ -155,6 +151,129 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                     })
     
     return pd.DataFrame(results)
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [신규 추가] '선정표 검토' 탭 전용 고속 배치 분석 함수 (기계) ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def _batch_analyze_op_point(model_df, target_q, target_h, q_col, h_col, k_col):
+    """
+    [배치 최적화용]
+    - 이미 필터링된 model_df를 받아서 1개의 (Q, H)에 대해서만 분석 (DataFrame 생성 안함)
+    - 성공 시 dict, 실패 시 None 반환
+    """
+    if target_h <= 0: return None
+
+    # target_q == 0 (체절 운전)
+    if target_q == 0:
+        churn_h = model_df.iloc[0][h_col]
+        if churn_h >= target_h:
+            churn_kw = model_df.iloc[0][k_col] if k_col and k_col in model_df.columns else np.nan
+            churn_eff = np.interp(0, model_df[q_col], model_df['Efficiency']) if 'Efficiency' in model_df.columns else 0
+            return {
+                "예상 양정": f"{churn_h:.2f}", 
+                "예상 동력(kW)": f"{churn_kw:.2f}", 
+                "예상 효율(%)": f"{churn_eff:.2f}", 
+                "선정 가능": "✅"
+            }
+        return None # 체절 양정 미달
+
+    # target_q > 0 (일반 운전)
+    if not (model_df[q_col].min() <= target_q <= model_df[q_col].max()):
+        return None # 유량 범위 이탈
+        
+    interp_h = np.interp(target_q, model_df[q_col], model_df[h_col])
+    
+    if interp_h >= target_h:
+        interp_kw = np.interp(target_q, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
+        interp_eff = np.interp(target_q, model_df[q_col], model_df['Efficiency']) if 'Efficiency' in model_df.columns else np.nan
+        return {
+            "예상 양정": f"{interp_h:.2f}", 
+            "예상 동력(kW)": f"{interp_kw:.2f}", 
+            "예상 효율(%)": f"{interp_eff:.2f}", 
+            "선정 가능": "✅"
+        }
+    else:
+        # 양정 미달 시 보정 검토
+        h_values_rev = model_df[h_col].values[::-1]
+        q_values_rev = model_df[q_col].values[::-1]
+
+        if target_h <= model_df[h_col].max() and target_h >= model_df[h_col].min():
+            q_required = np.interp(target_h, h_values_rev, q_values_rev)
+            if 0.95 * target_q <= q_required < target_q: # 5% 이내 보정
+                correction_pct = (1 - (q_required / target_q)) * 100
+                status_text = f"유량 {correction_pct:.1f}% 보정 전제 사용 가능"
+                interp_kw_corr = np.interp(q_required, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
+                interp_eff_corr = np.interp(q_required, model_df[q_col], model_df['Efficiency']) if 'Efficiency' in model_df.columns else np.nan
+                return {
+                    "예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
+                    "예상 동력(kW)": f"{interp_kw_corr:.2f}", 
+                    "예상 효율(%)": f"{interp_eff_corr:.2f}", 
+                    "선정 가능": status_text
+                }
+    return None # 최종 실패
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [신규 추가] '선정표 검토' 탭 전용 고속 배치 분석 함수 (소방) ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col):
+    """
+    [배치 최적화용]
+    - 이미 필터링된 model_df를 받아서 1개의 (Q, H)에 대해서만 분석 (DataFrame 생성 안함)
+    - 성공 시 dict, 실패 시 None 반환
+    """
+    if target_q <= 0 or target_h <= 0: return None
+    
+    interp_h_rated = np.interp(target_q, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
+    h_churn = model_df.iloc[0][h_col]
+    q_overload = 1.5 * target_q
+    interp_h_overload = np.interp(q_overload, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
+
+    # 1. 정격점(Q) 기준 분석
+    if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
+        cond1_ok = h_churn <= (1.40 * target_h)
+        cond2_ok = (not np.isnan(interp_h_overload)) and (interp_h_overload >= (0.65 * target_h))
+        if cond1_ok and cond2_ok:
+            interp_kw = np.interp(target_q, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
+            return {
+                "정격 예상 양정": f"{interp_h_rated:.2f}", 
+                "체절 양정 (예상)": f"{h_churn:.2f}",
+                "체절 양정 (기준)": f"≤{1.4*target_h:.2f}",
+                "최대운전 양정 (예상)": f"{interp_h_overload:.2f}",
+                "최대운전 양정 (기준)": f"≥{0.65*target_h:.2f}",
+                "예상 동력(kW)": f"{interp_kw:.2f}", 
+                "선정 가능": "✅"
+            }
+        # 3점 기준 미달 시, 보정 분석으로 넘어감
+            
+    # 2. 정격점(H) 기준 유량 보정 분석
+    h_values_rev = model_df[h_col].values[::-1]
+    q_values_rev = model_df[q_col].values[::-1]
+
+    if target_h <= model_df[h_col].max() and target_h >= model_df[h_col].min():
+        q_required = np.interp(target_h, h_values_rev, q_values_rev)
+        if 0.95 * target_q <= q_required < target_q: # 5% 이내 보정
+            q_overload_corr = 1.5 * q_required
+            interp_h_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
+            
+            cond1_ok = h_churn <= (1.40 * target_h)
+            cond2_ok = (not np.isnan(interp_h_overload_corr)) and (interp_h_overload_corr >= (0.65 * target_h))
+
+            if cond1_ok and cond2_ok:
+                correction_pct = (1 - (q_required / target_q)) * 100
+                status_text = f"유량 {correction_pct:.1f}% 보정 전제 사용 가능"
+                interp_kw_corr = np.interp(q_required, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
+                return {
+                    "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
+                    "체절 양정 (예상)": f"{h_churn:.2f}",
+                    "체절 양정 (기준)": f"≤{1.4*target_h:.2f}",
+                    "최대운전 양정 (예상)": f"{interp_h_overload_corr:.2f}",
+                    "최대운전 양정 (기준)": f"≥{0.65*target_h:.2f}",
+                    "예상 동력(kW)": f"{interp_kw_corr:.2f}", 
+                    "선정 가능": status_text
+                }
+                
+    return None # 최종 실패
+
 
 def render_filters(df, mcol, prefix):
     if df is None or df.empty or mcol is None or 'Series' not in df.columns:
@@ -641,7 +760,7 @@ if uploaded_file:
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         # ★ 3. '선정표 검토 (AI)' 탭 로직 (신규 추가) ★
-        # ★   (KeyError 해결을 위해 고정 Key를 사용하도록 수정) ★
+        # ★   (성능 최적화를 위해 GroupBy 로직으로 전면 수정) ★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         with tabs[5]:
             st.subheader("🔥 XRF 모델 선정표 자동 검토 (AI)")
@@ -690,23 +809,103 @@ if uploaded_file:
 
                             # (4) 검토 실행 버튼
                             if st.button("🚀 소방 성능 기준 검토 실행"):
-                                with st.spinner(f"{len(task_df)}개 항목을 'reference data'와 비교 검토 중입니다... (1~2분 소요)"):
+                                # [수정] GroupBy 최적화 로직 적용
+                                with st.spinner(f"{len(task_df)}개 항목을 'reference data'와 비교 검토 중입니다... (최적화 적용됨)"):
                                     results = []
                                     all_ref_models = df_r[m_r].unique()
-                                    
-                                    for _, row in task_df.iterrows():
-                                        model = row['모델명']
-                                        q = row['요구 유량 (Q)']
-                                        h = row['요구 양정 (H)']
+                                    grouped_tasks = task_df.groupby('모델명')
+
+                                    for model_name, tasks in grouped_tasks:
+                                        base_info_template = {"선정 모델": model_name}
                                         
-                                        if model not in all_ref_models:
-                                            result_detail = {
-                                                "결과": "❌ 모델 없음",
-                                                "상세": "Reference 데이터에 해당 모델명이 없습니다."
-                                            }
-                                        else:
-                                            op_result_df = analyze_fire_pump_point(df_r, [model], q, h, m_r, q_col_total, h_col_total, k_col_total)
+                                        # 1. 기준 데이터에 모델이 없는 경우
+                                        if model_name not in all_ref_models:
+                                            result_detail = {"결과": "❌ 모델 없음", "상세": "Reference 데이터에 해당 모델명이 없습니다."}
+                                            for _, task_row in tasks.iterrows():
+                                                base_info = base_info_template.copy()
+                                                base_info.update({"요구 유량(Q)": task_row['요구 유량 (Q)'], "요구 양정(H)": task_row['요구 양정 (H)']})
+                                                base_info.update(result_detail)
+                                                results.append(base_info)
+                                            continue # 다음 모델 그룹으로
+
+                                        # 2. 모델이 있는 경우, 모델 데이터프레임을 "한 번" 필터링
+                                        model_df = df_r[df_r[m_r] == model_name].sort_values(q_col_total)
+
+                                        if model_df.empty or len(model_df) < 2:
+                                            result_detail = {"결과": "❌ 기준 데이터 오류", "상세": "Reference에 모델은 있으나 유효한 성능 곡선 데이터가 없습니다."}
+                                            for _, task_row in tasks.iterrows():
+                                                base_info = base_info_template.copy()
+                                                base_info.update({"요구 유량(Q)": task_row['요구 유량 (Q)'], "요구 양정(H)": task_row['요구 양정 (H)']})
+                                                base_info.update(result_detail)
+                                                results.append(base_info)
+                                            continue # 다음 모델 그룹으로
+
+                                        # 3. 이 모델에 대한 모든 (Q, H) 작업을 "배치 전용 함수"로 빠르게 처리
+                                        for _, task_row in tasks.iterrows():
+                                            q = task_row['요구 유량 (Q)']
+                                            h = task_row['요구 양정 (H)']
                                             
-                                            if not op_result_df.empty:
-                                                # [수정] 고정 Key로 결과값을 조회합니다.
-                                                res_row = op_result_df.iloc[0]
+                                            # 고속 소방 분석 함수 호출
+                                            op_result_dict = _batch_analyze_fire_point(model_df, q, h, q_col_total, h_col_total, k_col_total)
+                                            
+                                            if op_result_dict:
+                                                # 분석 성공 (기준 통과)
+                                                result_detail = {
+                                                    "결과": op_result_dict['선정 가능'],
+                                                    "정격 양정": op_result_dict['정격 예상 양정'],
+                                                    "체절 양정": f"{op_result_dict['체절 양정 (예상)']} (기준: {op_result_dict['체절 양정 (기준)']})",
+                                                    "최대 양정": f"{op_result_dict['최대운전 양정 (예상)']} (기준: {op_result_dict['최대운전 양정 (기준)']})",
+                                                    "예상 동력": op_result_dict['예상 동력(kW)']
+                                                }
+                                            else:
+                                                # 분석 실패 -> 기계 모드로 힌트 제공
+                                                mech_check_dict = _batch_analyze_op_point(model_df, q, h, q_col_total, h_col_total, k_col_total)
+                                                if mech_check_dict:
+                                                    details = f"정격점은 만족하나 3점(체절/최대) 기준 미달. (예상양정: {mech_check_dict['예상 양정']})"
+                                                else:
+                                                    details = "요구 성능을 만족하는 운전점을 찾을 수 없음 (유량 범위 이탈 등)"
+                                                    
+                                                result_detail = {
+                                                    "결과": "❌ 사용 불가",
+                                                    "상세": details
+                                                }
+                                    
+                                            base_info = base_info_template.copy()
+                                            base_info.update({"요구 유량(Q)": q, "요구 양정(H)": h})
+                                            base_info.update(result_detail)
+                                            results.append(base_info)
+                                    
+                                st.session_state.review_results_df = pd.DataFrame(results)
+                                st.success("선정표 검토 완료!")
+
+                # (5) 결과 표시
+                if 'review_results_df' in st.session_state:
+                    st.markdown("---")
+                    st.markdown("### 📊 검토 결과 요약")
+                    results_df = st.session_state.review_results_df
+                    
+                    # 결과 필터링
+                    failed_df = results_df[results_df['결과'].str.contains("❌")]
+                    warning_df = results_df[~results_df['결과'].str.contains("❌|✅")] # "보정" 등
+                    success_df = results_df[results_df['결과'] == "✅"]
+                    
+                    res_col1, res_col2, res_col3, res_col4 = st.columns(4)
+                    res_col1.metric("총 검토 항목", len(results_df))
+                    res_col2.metric("❌ 선정 오류", len(failed_df), delta_color="inverse")
+                    res_col3.metric("⚠️ 보정 필요", len(warning_df), delta_color="off")
+                    res_col4.metric("✅ 선정 가능", len(success_df))
+                    
+                    st.markdown("#### ❌ 선정 오류 목록")
+                    if failed_df.empty:
+                        st.info("선정 오류로 판단된 항목이 없습니다.")
+                    else:
+                        st.dataframe(failed_df.set_index("선정 모델"), use_container_width=True)
+                    
+                    st.markdown("#### ⚠️ 보정 필요 목록")
+                    if warning_df.empty:
+                        st.info("유량 보정이 필요한 항목이 없습니다.")
+                    else:
+                        st.dataframe(warning_df.set_index("선정 모델"), use_container_width=True)
+                        
+                    with st.expander("✅ 전체 검토 결과 보기 (성공/실패/보정 포함)"):
+                        st.dataframe(results_df.set_index("선정 모델"), use_container_width=True)
