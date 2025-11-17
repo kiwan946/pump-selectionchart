@@ -11,7 +11,7 @@ st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v1.0")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
-# ★ 1-1. 표준 모터 리스트
+# 1-1. 표준 모터 리스트
 STANDARD_MOTORS = [0.75, 1.5, 2.2, 3.7, 5.5, 7.5, 11, 15, 22, 30, 37, 45, 55, 75, 90, 110, 132, 160, 200]
 
 def get_best_match_column(df, names):
@@ -315,7 +315,13 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
     if target_h <= model_df[h_col].max() and target_h >= model_df[h_col].min():
         q_required = np.interp(target_h, h_values_rev, q_values_rev)
         
-        # Case 2a: 5% 이내 보정
+        # [수정] Case 2a: 5% 초과 보정 (즉시 실패)
+        if q_required < 0.95 * target_q:
+            correction_pct = (1 - (q_required / target_q)) * 100
+            base_result["상세"] = f"5% 초과 유량 보정 필요 ({correction_pct:.1f}%)"
+            return base_result # ❌ (Fail)
+
+        # Case 2b: 5% 이내 보정
         if 0.95 * target_q <= q_required < target_q: 
             q_overload_corr = 1.5 * q_required
             interp_h_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
@@ -329,7 +335,7 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                 p_corr = np.interp(q_required, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
                 p_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
                 motor_corr = _calculate_motor(p_corr, p_overload_corr, standard_motors)
-
+                
                 base_result.update({
                     "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
                     "최대운전 양정 (예상)": f"{interp_h_overload_corr:.2f}",
@@ -340,12 +346,6 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                     "상세": "유량 보정 기준"
                 })
                 return base_result # ⚠️ (Warning)
-        
-        # [수정] Case 2b: 5% 초과 보정 (사용자의 새 요청)
-        elif q_required < 0.95 * target_q:
-            correction_pct = (1 - (q_required / target_q)) * 100
-            base_result["상세"] = f"5% 초과 유량 보정 필요 ({correction_pct:.1f}%)"
-            return base_result # ❌ (Fail)
 
     # 3. [최종 실패] 모든 기준 미달 시 (실패 사유 판별)
     if not base_result["상세"]: # 상세 사유가 아직 없다면
@@ -950,8 +950,8 @@ if uploaded_file:
                                                 "선정 모터(kW)": op_result_dict['선정 모터(kW)'],
                                                 "상세": op_result_dict.get("상세", ""),
                                                 # (디버깅용)
-                                                # "정격 동력(kW)": op_result_dict['정격 동력(kW)'],
-                                                # "최대 동력(kW)": op_result_dict['최대 동력(kW)'],
+                                                "정격 동력(kW)": op_result_dict['정격 동력(kW)'],
+                                                "최대 동력(kW)": op_result_dict['최대 동력(kW)'],
                                             }
                                     
                                             base_info = base_info_template.copy()
