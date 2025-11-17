@@ -38,7 +38,7 @@ def load_sheet(uploaded_file, sheet_name):
         mcol = get_best_match_column(df, ["모델명", "모델", "Model"])
         if not mcol: return None, pd.DataFrame()
         if 'Series' in df.columns: df = df.drop(columns=['Series'])
-        df['Series'] = df[mcol].astype(str).str.extract(r"(XRF\d+)")
+        df['Series'] = df[mcol].astype(str).str_extract(r"(XRF\d+)")
         df['Series'] = pd.Categorical(df['Series'], categories=SERIES_ORDER, ordered=True)
         df = df.sort_values('Series')
         return mcol, df
@@ -95,6 +95,29 @@ def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col,
     
     return pd.DataFrame(results)
 
+
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [신규 추가] 표준 모터 계산 헬퍼 함수 ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+def _calculate_motor(p_rated, p_overload, standard_motors):
+    """
+    [배치 최적화용]
+    - 1-2. 정격(105%)과 1-3. 최대운전(115%)을 동시 만족하는 1-1. 표준모터 선정
+    """
+    if pd.isna(p_rated) or pd.isna(p_overload):
+        return np.nan
+    for motor_kw in standard_motors:
+        # 1-2. 정격에서 105% 이내
+        cond_rated = (p_rated <= motor_kw * 1.05)
+        # 1-3. 최대운전(150%Q)에서 115% 이내
+        cond_overload = (p_overload <= motor_kw * 1.15)
+        
+        if cond_rated and cond_overload:
+            return motor_kw # 1-4. 동시 만족하는 가장 작은 모터 반환
+            
+    return np.nan # 200kW를 넘는 경우
+
+
 # [원본] Total 탭의 '단일 운전점 분석'용
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★ [수정됨] analyze_fire_pump_point 함수 ★
@@ -107,12 +130,15 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
         model_df = df[df[m_col] == model].sort_values(q_col)
         if len(model_df) < 2: continue
         
-        # --- 3점 계산 (항상) ---
-        interp_h_rated = np.interp(target_q, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
+        # --- 3점 계산 (정격 기준) ---
+        q_rated = target_q
+        interp_h_rated = np.interp(q_rated, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
+        p_rated = np.interp(q_rated, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
         h_churn = model_df.iloc[0][h_col]
-        q_overload = 1.5 * target_q
-        interp_h_overload = np.interp(q_overload, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
-        interp_kw = np.interp(target_q, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
+        q_overload_rated = 1.5 * q_rated
+        interp_h_overload_rated = np.interp(q_overload_rated, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
+        p_overload_rated = np.interp(q_overload_rated, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
+        motor_rated = _calculate_motor(p_rated, p_overload_rated, STANDARD_MOTORS)
 
         # --- 기준값 (항상) ---
         h_churn_limit = 1.40 * target_h
@@ -124,66 +150,84 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
             "정격 예상 양정": f"{interp_h_rated:.2f}",
             "체절 양정 (예상)": f"{h_churn:.2f}",
             "체절 양정 (기준)": f"≤{h_churn_limit:.2f}",
-            "최대운전 양정 (예상)": f"{interp_h_overload:.2f}",
+            "최대운전 양정 (예상)": f"{interp_h_overload_rated:.2f}",
             "최대운전 양정 (기준)": f"≥{h_overload_limit:.2f}",
-            "예상 동력(kW)": f"{interp_kw:.2f}",
-            "선정 가능": "❌ 사용 불가" # (기본값: 실패)
+            "선정 모터(kW)": motor_rated, # 모터 동력 추가
+            "예상 동력(kW)": f"{p_rated:.2f}", # 상세 비교용 (정격동력)
+            "선정 가능": "❌ 사용 불가", # (기본값: 실패)
+            "상세": "" # (실패 사유)
         }
 
-        # 1. 정격점(Q) 기준 3점 검사
-        if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
-            cond1_ok = h_churn <= h_churn_limit
-            cond2_ok = (not np.isnan(interp_h_overload)) and (interp_h_overload >= h_overload_limit)
-            if cond1_ok and cond2_ok:
-                base_result["선정 가능"] = "✅"
-                results.append(base_result)
-                continue # [성공]
-
-        # 2. 정격점(H) 기준 유량 보정 분석
+        # ★★★★★ [수정된 로직] ★★★★★
+        
+        # 1. 정격점(H) 기준 유량 보정 분석 (먼저 수행)
         h_values_rev = model_df[h_col].values[::-1]
         q_values_rev = model_df[q_col].values[::-1]
+        
+        # H가 곡선 범위 내에 있는지 확인
         if target_h <= model_df[h_col].max() and target_h >= model_df[h_col].min():
             q_required = np.interp(target_h, h_values_rev, q_values_rev)
             
-            # Case 2a: 5% 이내 보정
-            if 0.95 * target_q <= q_required < target_q: 
+            # Case 1a: 5% 초과 보정 (즉시 실패)
+            if q_required < (0.95 * target_q) or q_required > (1.05 * target_q):
+                correction_pct = (1 - (q_required / target_q)) * 100
+                base_result["상세"] = f"5% 초과 유량 보정 필요 ({correction_pct:.1f}%)"
+                results.append(base_result)
+                continue # [실패]
+            
+            # Case 1b: 5% 이내 보정
+            if (0.95 * target_q) <= q_required <= (1.05 * target_q): 
                 q_overload_corr = 1.5 * q_required
                 interp_h_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
                 cond1_ok = h_churn <= h_churn_limit
                 cond2_ok = (not np.isnan(interp_h_overload_corr)) and (interp_h_overload_corr >= h_overload_limit)
 
                 if cond1_ok and cond2_ok:
+                    # [성공] 유량 보정 기준 통과
                     correction_pct = (1 - (q_required / target_q)) * 100
                     status_text = f"유량 {correction_pct:.1f}% 보정 전제 사용 가능"
-                    interp_kw_corr = np.interp(q_required, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
+                    p_corr = np.interp(q_required, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
+                    p_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
+                    motor_corr = _calculate_motor(p_corr, p_overload_corr, STANDARD_MOTORS)
                     
                     base_result.update({
                         "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
                         "최대운전 양정 (예상)": f"{interp_h_overload_corr:.2f}",
-                        "예상 동력(kW)": f"{interp_kw_corr:.2f}", 
-                        "선정 가능": status_text
+                        "예상 동력(kW)": f"{p_corr:.2f}", 
+                        "선정 모터(kW)": motor_corr,
+                        "선정 가능": status_text,
+                        "상세": "유량 보정 기준"
                     })
                     results.append(base_result)
                     continue # [성공 - 보정]
-            
-            # Case 2b: 5% 초과 보정 (사용자 요청 -> '사용 불가' 처리)
-            elif q_required < 0.95 * target_q:
-                pass # 3. 최종 실패 로직으로 넘어감
-    
-    # 3. [최종 실패] (1, 2a 모두 통과 못함)
-    results.append(base_result)
+        
+        # 2. 정격점(Q) 기준 3점 검사 (1단계에서 성공/보정 판정을 받지 못한 경우)
+        if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
+            cond1_ok = h_churn <= h_churn_limit
+            cond2_ok = (not np.isnan(interp_h_overload_rated)) and (interp_h_overload_rated >= h_overload_limit)
+            if cond1_ok and cond2_ok:
+                base_result["선정 가능"] = "✅"
+                base_result["상세"] = "정격 유량 기준"
+                results.append(base_result)
+                continue # [성공]
+
+        # 3. [최종 실패] (1, 2 모두 통과 못함)
+        if not base_result["상세"]: # 상세 사유가 아직 없다면
+            if np.isnan(interp_h_rated) or interp_h_rated < target_h:
+                 base_result["상세"] = "정격 유량에서 양정 미달 (보정 불가)"
+            elif h_churn > h_churn_limit:
+                 base_result["상세"] = f"체절 양정 초과 (기준: {base_result['체절 양정 (기준)']})"
+            elif np.isnan(interp_h_overload_rated) or interp_h_overload_rated < h_overload_limit:
+                 base_result["상세"] = f"최대 운전 양정 미달 (기준: {base_result['최대운전 양정 (기준)']})"
+            else:
+                 base_result["상세"] = "3점 기준 미달 (복합)"
+                 
+        results.append(base_result)
             
     return pd.DataFrame(results)
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [신규 추가] '선정표 검토' 탭 전용 고속 배치 분석 함수 (기계) ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# [배치 최적화용] 기계 모드
 def _batch_analyze_op_point(model_df, target_q, target_h, q_col, h_col, k_col):
-    """
-    [배치 최적화용]
-    - 이미 필터링된 model_df를 받아서 1개의 (Q, H)에 대해서만 분석 (DataFrame 생성 안함)
-    - 성공 시 dict, 실패 시 None 반환
-    """
     if target_h <= 0: return None
     if target_q == 0:
         churn_h = model_df.iloc[0][h_col]
@@ -227,27 +271,6 @@ def _batch_analyze_op_point(model_df, target_q, target_h, q_col, h_col, k_col):
                 }
     return None
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [신규 추가] 표준 모터 계산 헬퍼 함수 ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-def _calculate_motor(p_rated, p_overload, standard_motors):
-    """
-    [배치 최적화용]
-    - 1-2. 정격(105%)과 1-3. 최대운전(115%)을 동시 만족하는 1-1. 표준모터 선정
-    """
-    if pd.isna(p_rated) or pd.isna(p_overload):
-        return np.nan
-    for motor_kw in standard_motors:
-        # 1-2. 정격에서 105% 이내
-        cond_rated = (p_rated <= motor_kw * 1.05)
-        # 1-3. 최대운전(150%Q)에서 115% 이내
-        cond_overload = (p_overload <= motor_kw * 1.15)
-        
-        if cond_rated and cond_overload:
-            return motor_kw # 1-4. 동시 만족하는 가장 작은 모터 반환
-            
-    return np.nan # 200kW를 넘는 경우
-
 # [배치 최적화용] 소방 모드
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★ [수정됨] _batch_analyze_fire_point 함수 ★
@@ -267,13 +290,11 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
             "정격 동력(kW)": np.nan, "최대 동력(kW)": np.nan, "선정 모터(kW)": np.nan
         }
     
-    # --- 3점 계산 (항상) ---
-    h_churn = model_df.iloc[0][h_col]
-    
-    # 정격(Q) 기준
+    # --- 3점 계산 (정격 기준) ---
     q_rated = target_q
     interp_h_rated = np.interp(q_rated, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
     p_rated = np.interp(q_rated, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
+    h_churn = model_df.iloc[0][h_col]
     q_overload_rated = 1.5 * q_rated
     interp_h_overload_rated = np.interp(q_overload_rated, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
     p_overload_rated = np.interp(q_overload_rated, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
@@ -297,32 +318,25 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
         "상세": "" # (실패 사유)
     }
 
-    # 1. 정격점(Q) 기준 3점 검사
-    if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
-        cond1_ok = h_churn <= h_churn_limit
-        cond2_ok = (not np.isnan(interp_h_overload_rated)) and (interp_h_overload_rated >= h_overload_limit)
-        if cond1_ok and cond2_ok:
-            # [성공] 정격점 기준 통과
-            base_result.update({
-                "선정 가능": "✅",
-                "상세": "정격 유량 기준"
-            })
-            return base_result # ✅ (Pass)
+    # ★★★★★ [수정된 로직] ★★★★★
 
-    # 2. 정격점(H) 기준 유량 보정 분석 (정격점이 실패했거나 양정이 미달된 경우)
+    # 1. 정격점(H) 기준 유량 보정 분석 (먼저 수행)
     h_values_rev = model_df[h_col].values[::-1]
     q_values_rev = model_df[q_col].values[::-1]
+    
+    # H가 곡선 범위 내에 있는지 확인
     if target_h <= model_df[h_col].max() and target_h >= model_df[h_col].min():
         q_required = np.interp(target_h, h_values_rev, q_values_rev)
         
-        # [수정] Case 2a: 5% 초과 보정 (즉시 실패)
-        if q_required < 0.95 * target_q:
+        # Case 1a: 5% 초과 보정 (즉시 실패)
+        # (5% 이내 허용이므로 0.95*Q ~ 1.05*Q 까지 허용)
+        if q_required < (0.95 * target_q) or q_required > (1.05 * target_q):
             correction_pct = (1 - (q_required / target_q)) * 100
             base_result["상세"] = f"5% 초과 유량 보정 필요 ({correction_pct:.1f}%)"
             return base_result # ❌ (Fail)
-
-        # Case 2b: 5% 이내 보정
-        if 0.95 * target_q <= q_required < target_q: 
+        
+        # Case 1b: 5% 이내 보정
+        if (0.95 * target_q) <= q_required <= (1.05 * target_q): 
             q_overload_corr = 1.5 * q_required
             interp_h_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
             cond1_ok = h_churn <= h_churn_limit
@@ -346,8 +360,23 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                     "상세": "유량 보정 기준"
                 })
                 return base_result # ⚠️ (Warning)
+            else:
+                # [실패] 보정은 했으나 3점 미달
+                base_result["상세"] = "보정 후 3점 기준 미달"
+                if not cond1_ok: base_result["상세"] += " (체절 초과)"
+                if not cond2_ok: base_result["상세"] += " (최대 미달)"
+                return base_result # ❌ (Fail)
+                
+    # 2. 정격점(Q) 기준 3점 검사 (1단계에서 성공/보정 판정을 받지 못한 경우)
+    if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
+        cond1_ok = h_churn <= h_churn_limit
+        cond2_ok = (not np.isnan(interp_h_overload_rated)) and (interp_h_overload_rated >= h_overload_limit)
+        if cond1_ok and cond2_ok:
+            base_result["선정 가능"] = "✅"
+            base_result["상세"] = "정격 유량 기준"
+            return base_result # ✅ (Pass)
 
-    # 3. [최종 실패] 모든 기준 미달 시 (실패 사유 판별)
+    # 3. [최종 실패] (1, 2 모두 통과 못함)
     if not base_result["상세"]: # 상세 사유가 아직 없다면
         if np.isnan(interp_h_rated) or interp_h_rated < target_h:
              base_result["상세"] = "정격 유량에서 양정 미달 (보정 불가)"
@@ -710,7 +739,7 @@ if uploaded_file:
                                             f"정격양정: {res_row['정격 예상 양정']} | "
                                             f"체절양정: {res_row['체절 양정 (예상)']} (기준: {res_row['체절 양정 (기준)']}) | "
                                             f"최대양정: {res_row['최대운전 양정 (예상)']} (기준: {res_row['최대운전 양정 (기준)']}) | "
-                                            f"동력: {res_row['예상 동력(kW)']}"
+                                            f"모터: {res_row['선정 모터(kW)']}kW"
                                         )
                                     else: # 기계
                                         head_val = res_row.get('예상 양정', 'N/A')
@@ -797,7 +826,7 @@ if uploaded_file:
                 mode, style = ('markers', None) if sheet_name == "Deviation" else ('lines+markers', dict(dash='dot') if sheet_name == "Catalog" else None)
                 if h_col_tab: st.markdown(f"#### Q-H ({h_col_tab})"); fig1 = go.Figure(); add_traces(fig1, df_f_tab, mcol, q_col_tab, h_col_tab, models_tab, mode, line_style=style); render_chart(fig1, key=f"{sheet_name}_qh")
                 if k_col_tab in df_f_tab.columns: st.markdown("#### Q-kW (축동력)"); fig2 = go.Figure(); add_traces(fig2, df_f_tab, mcol, q_col_tab, k_col_tab, models_tab, mode, line_style=style); render_chart(fig2, key=f"{sheet_name}_qk")
-                if 'Efficiency' in df_f_tab.columns: st.markdown("#### Q-Efficiency (효율)"); fig3 = go.Figure(); add_traces(fig3, df_f_tab, mcol, q_col_tab, 'Efficiency', models_tab, mode, line_style=style); fig3.update_layout(yaxis_title="효율 (%)", yaxis=dict(range=[0, 100])); render_chart(fig3, key=f"{sheet_name}_qe")
+                if 'Efficiency' in df_f_tab.columns: st.markdown("#### Q-Efficiency (효율)"); fig3 = go.Figure(); add_traces(fig3, df_f_tab, mcol, q_col_total, 'Efficiency', models_tab, mode, line_style=style); fig3.update_layout(yaxis_title="효율 (%)", yaxis=dict(range=[0, 100])); render_chart(fig3, key=f"{sheet_name}_qe")
                 st.markdown("#### 데이터 확인"); st.dataframe(df_f_tab, use_container_width=True)
         
         with tabs[4]:
