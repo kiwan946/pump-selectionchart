@@ -6,7 +6,7 @@ import numpy as np
 from scipy.stats import t
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v1.0", layout="wide")
+st.set_page_config(page_title="Dooch XRL(F) 선정표 자동검토 v1.0", layout="wide")
 st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v1.0")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
