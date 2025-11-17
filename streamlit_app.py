@@ -223,21 +223,18 @@ def perform_validation_analysis(df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col
         all_results[model] = { 'summary': pd.DataFrame(model_summary), 'samples': interpolated_y_samples }
     return all_results
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ 1. '선정표 파싱' 헬퍼 함수 (여기에 추가됨) ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-def parse_selection_table(df_selection_csv):
+def parse_selection_table(df_selection_table):
     """
-    사용자가 업로드한 'XRF 모델 선정표...csv' 파일의 특정 구조를 파싱합니다.
+    사용자가 업로드한 'XRF 모델 선정표...' (CSV 또는 Excel) 파일의 특정 구조를 파싱합니다.
     - Q (유량)은 11행 (인덱스 10)에서 E, H, K... 열(3칸 간격)에서 가져옵니다.
     - H (양정)은 B열 (인덱스 1)에서 16, 19, 22... 행(3줄 간격)에서 가져옵니다.
     - Model은 위 Q, H가 교차하는 지점에서 가져옵니다.
     """
     try:
         # 유량(Q) 헤더가 있는 열 인덱스: 4(E), 7(H), 10(K), ...
-        q_col_indices = list(range(4, df_selection_csv.shape[1], 3))
+        q_col_indices = list(range(4, df_selection_table.shape[1], 3))
         # 양정(H) 헤더가 있는 행 인덱스: 15(16행), 18(19행), 21(22행), ...
-        h_row_indices = list(range(15, df_selection_csv.shape[0], 3))
+        h_row_indices = list(range(15, df_selection_table.shape[0], 3))
         
         tasks = []
         q_values = {}
@@ -245,7 +242,7 @@ def parse_selection_table(df_selection_csv):
 
         # 1. 유량(Q) 값 파싱 (11행, 인덱스 10)
         for c_idx in q_col_indices:
-            q_val_raw = str(df_selection_csv.iloc[10, c_idx])
+            q_val_raw = str(df_selection_table.iloc[10, c_idx])
             if pd.isna(q_val_raw) or q_val_raw == "": continue
             try:
                 # '0.13 (7.8)' 형식에서 '0.13'만 추출
@@ -256,7 +253,7 @@ def parse_selection_table(df_selection_csv):
         
         # 2. 양정(H) 값 파싱 (B열, 인덱스 1)
         for r_idx in h_row_indices:
-            h_val_raw = str(df_selection_csv.iloc[r_idx, 1])
+            h_val_raw = str(df_selection_table.iloc[r_idx, 1])
             if pd.isna(h_val_raw) or h_val_raw == "": continue
             try:
                 h_values[r_idx] = float(h_val_raw)
@@ -266,7 +263,7 @@ def parse_selection_table(df_selection_csv):
         # 3. 교차 지점의 모델명 파싱
         for r_idx in h_values:
             for c_idx in q_values:
-                model_name = str(df_selection_csv.iloc[r_idx, c_idx]).strip()
+                model_name = str(df_selection_table.iloc[r_idx, c_idx]).strip()
                 
                 # 'nan', '미선정...' 등이 아닌 유효한 모델명인지 확인
                 if model_name and model_name.lower() != 'nan' and 'XRF' in model_name:
@@ -282,9 +279,6 @@ def parse_selection_table(df_selection_csv):
     except Exception as e:
         st.error(f"선정표 파싱 중 심각한 오류 발생: {e}")
         return pd.DataFrame()
-
-# ★ (추가 끝) ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 
 def display_validation_output(model, validation_data, analysis_type, df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col):
     if model not in validation_data or validation_data[model]['summary'].empty:
@@ -368,9 +362,7 @@ if uploaded_file:
             df_d_orig[test_id_col_d] = df_d_orig[test_id_col_d].ffill()
         df_r = process_data(df_r_orig, q_col_total, h_col_total, k_col_total); df_c = process_data(df_c_orig, q_c, h_c, k_c); df_d = process_data(df_d_orig, q_d, h_d, k_d)
         
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-        # ★ 2. '탭 리스트' 수정 (맨 뒤에 "🔥 선정표 검토 (AI)" 추가) ★
-        # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+        # '탭 리스트' 수정 (맨 뒤에 "🔥 선정표 검토 (AI)" 추가)
         tab_list = ["Total", "Reference", "Catalog", "Deviation", "Validation", "🔥 선정표 검토 (AI)"]
         tabs = st.tabs(tab_list)
         
@@ -620,6 +612,7 @@ if uploaded_file:
 
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         # ★ 3. '선정표 검토 (AI)' 탭 로직 (신규 추가) ★
+        # ★   (CSV -> Excel로 수정됨)         ★
         # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
         with tabs[5]:
             st.subheader("🔥 XRF 모델 선정표 자동 검토 (AI)")
@@ -631,38 +624,35 @@ if uploaded_file:
             
             # (2) 기준 데이터가 있을 경우, 검토 파일 업로더 표시
             else:
-                st.info("검토 대상인 'XRF 모델 선정표_품질검토본...' CSV 파일을 업로드하세요.")
+                st.info("검토 대상인 'XRF 모델 선정표...' 엑셀 파일을 업로드하세요.")
                 
-                review_csv_file = st.file_uploader("선정표 CSV 파일 업로드", type=["csv"], key="review_csv")
+                # [수정] CSV -> Excel 파일 업로더로 변경
+                review_excel_file = st.file_uploader("선정표 Excel 파일 업로드 (.xlsx, .xlsm)", type=["xlsx", "xlsm"], key="review_excel")
                 
-                if review_csv_file:
+                if review_excel_file:
                     try:
-                        # CSV를 'header=None'으로 읽어와서 원본 셀 위치를 그대로 사용
-                        df_selection_csv = pd.read_csv(review_csv_file, header=None, encoding='utf-8-sig')
-                    except Exception:
-                        st.warning("UTF-8 인코딩 실패. 'CP949'(Windows 한글)로 재시도합니다.")
-                        try:
-                            review_csv_file.seek(0) # 파일 포인터 리셋
-                            df_selection_csv = pd.read_csv(review_csv_file, header=None, encoding='cp949')
-                            st.success("'CP949' 인코딩으로 로드 성공!")
-                        except Exception as e_cp949:
-                            st.error(f"CSV 파일 로딩에 실패했습니다: {e_cp949}")
-                            df_selection_csv = None
+                        # 엑셀 파일을 'header=None'으로 읽어와서 원본 셀 위치를 그대로 사용
+                        # 엑셀 파일은 기본적으로 첫 번째 시트를 읽음.
+                        df_selection_excel = pd.read_excel(review_excel_file, header=None)
+                    except Exception as e_excel:
+                        st.error(f"Excel 파일 로딩에 실패했습니다: {e_excel}")
+                        df_selection_excel = None
 
-                    if df_selection_csv is not None:
-                        # (3) CSV 파싱 (1번에서 추가한 함수 사용)
-                        if 'task_list_df' not in st.session_state or st.session_state.get('review_csv_name') != review_csv_file.name:
-                            with st.spinner("선정표(CSV) 파일을 분석하여 검토 목록을 생성 중입니다..."):
-                                st.session_state.task_list_df = parse_selection_table(df_selection_csv)
-                                st.session_state.review_csv_name = review_csv_file.name # 새 파일 감지용
+                    if df_selection_excel is not None:
+                        # (3) 엑셀 파싱 (기존 parse_selection_table 함수 재사용)
+                        # 파싱 함수는 DataFrame을 인자로 받으므로 CSV든 Excel이든 동일하게 작동
+                        if 'task_list_df' not in st.session_state or st.session_state.get('review_file_name') != review_excel_file.name:
+                            with st.spinner("선정표(Excel) 파일을 분석하여 검토 목록을 생성 중입니다..."):
+                                st.session_state.task_list_df = parse_selection_table(df_selection_excel)
+                                st.session_state.review_file_name = review_excel_file.name # 새 파일 감지용 (일반화된 key)
                         
                         task_df = st.session_state.task_list_df
                         
                         if task_df.empty:
-                            st.error("CSV 파일에서 유효한 검토 대상(모델명, Q, H)을 찾지 못했습니다. 파일 형식을 확인하세요.")
+                            st.error("Excel 파일에서 유효한 검토 대상(모델명, Q, H)을 찾지 못했습니다. 파일 형식을 확인하세요.")
                         else:
                             st.markdown(f"**총 {len(task_df)}개**의 검토 대상을 찾았습니다.")
-                            with st.expander("파싱된 검토 목록 확인 (CSV 파일 기준)"):
+                            with st.expander("파싱된 검토 목록 확인 (Excel 파일 기준)"):
                                 st.dataframe(task_df, use_container_width=True)
 
                             # (4) 검토 실행 버튼
