@@ -4,10 +4,11 @@ import plotly.graph_objs as go
 import plotly.figure_factory as ff
 import numpy as np
 from scipy.stats import t
+import re  # 정규식 사용을 위해 추가
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.3", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.3 (최신 라이브러리 대응)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.4", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.4 (스마트 탐색 최적화)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -38,6 +39,8 @@ def load_sheet(uploaded_file, sheet_name):
         mcol = get_best_match_column(df, ["모델명", "모델", "Model"])
         if not mcol: return None, pd.DataFrame()
         if 'Series' in df.columns: df = df.drop(columns=['Series'])
+        
+        # Series 컬럼 생성 (중요: 탐색 최적화에 사용됨)
         df['Series'] = df[mcol].astype(str).str.extract(r"(XRF\d+)")
         df['Series'] = pd.Categorical(df['Series'], categories=SERIES_ORDER, ordered=True)
         df = df.sort_values('Series')
@@ -211,17 +214,41 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
         "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0
     }
 
-# [추천 시스템] 대안 모델 탐색
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [최적화 완료] 대안 모델 추천 함수 v2.4 ★
+# ★ - 할당된 모델의 시리즈를 인식하여 (현재 인덱스 - 2) 이상의 시리즈만 탐색
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assigned_model):
-    all_models = df_r[m_r].unique()
+    
+    # 1. 현재 할당된 모델의 시리즈 식별 (예: "XRF215-...")
+    match = re.search(r"(XRF\d+)", str(assigned_model))
+    target_series_subset = []
+    
+    if match:
+        current_series = match.group(1)
+        if current_series in SERIES_ORDER:
+            curr_idx = SERIES_ORDER.index(current_series)
+            # [최적화 핵심] 현재 시리즈의 2단계 아래부터 끝까지만 탐색 범위로 설정
+            start_idx = max(0, curr_idx - 2)
+            target_series_subset = SERIES_ORDER[start_idx:]
+    
+    # 2. 탐색 대상 모델 리스트업
+    if target_series_subset:
+        # 'Series' 컬럼은 load_sheet에서 이미 생성되어 있음
+        candidate_models = df_r[df_r['Series'].isin(target_series_subset)][m_r].unique()
+    else:
+        # 시리즈 식별 불가 시 전체 탐색 (Fallback)
+        candidate_models = df_r[m_r].unique()
+
     candidates = []
 
-    for model in all_models:
+    for model in candidate_models:
         if model == assigned_model: continue
         
         model_df = df_r[df_r[m_r] == model].sort_values(q_col)
         if model_df.empty: continue
         
+        # 물리적 범위 1차 필터링 (속도 향상)
         if not (model_df[q_col].max() * 1.1 >= target_q and model_df[h_col].max() >= target_h):
             continue
 
