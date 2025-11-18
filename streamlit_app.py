@@ -6,8 +6,8 @@ import numpy as np
 from scipy.stats import t
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.1", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.1 (상세 분석 및 추천)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.2", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.2 (속도 최적화)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -120,24 +120,17 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
     return pd.DataFrame(results)
 
 # -----------------------------------------------------------------------------------
-# ★ [코어 로직] 표준 모터 및 소방 분석 함수 (v2.1)
+# ★ [코어 로직] 표준 모터 및 소방 분석 함수
 # -----------------------------------------------------------------------------------
 def _calculate_motor(p_rated, p_overload, standard_motors):
     if pd.isna(p_rated) or pd.isna(p_overload):
         return np.nan
     for motor_kw in standard_motors:
-        # 1-2. 정격에서 105% 이내, 1-3. 최대운전(150%Q)에서 115% 이내
         if (p_rated <= motor_kw * 1.05) and (p_overload <= motor_kw * 1.15):
             return motor_kw
     return np.nan
 
 def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, standard_motors):
-    """
-    [소방 성능 분석 코어]
-    - Tolerance 3% 적용하여 3점 검사 (정격, 체절, 최대)
-    - 실패 시 0~5% 유량 보정 반복 시도
-    - 보정률, 동력초과율 등 상세 데이터 반환
-    """
     if target_q <= 0 or target_h <= 0: 
         return {
             "선정 가능": "❌ 사용 불가", "상세": "유량/양정 0",
@@ -150,16 +143,12 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
     h_churn_limit = 1.40 * target_h
     h_overload_limit = 0.65 * target_h
     h_churn = model_df.iloc[0][h_col]
-    TOLERANCE_FACTOR = 0.97 # 3% 오차 허용
+    TOLERANCE_FACTOR = 0.97 
 
-    # 0% ~ 5%까지 0.1% 단위 반복
     correction_steps = np.linspace(0, 0.05, 51) 
     
     for correction_pct in correction_steps:
-        # 보정된 정격 유량
         q_corrected = target_q * (1 - correction_pct)
-        
-        # 3점 데이터 추출 (보간)
         interp_h_rated = np.interp(q_corrected, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
         q_overload_corr = 1.5 * q_corrected
         interp_h_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
@@ -167,16 +156,12 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
         p_corr = np.interp(q_corrected, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
         p_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
         
-        # 합격 조건 검사 (Tolerance 적용)
         cond_rated = (not np.isnan(interp_h_rated)) and (interp_h_rated >= target_h)
         cond_churn = (h_churn <= h_churn_limit)
         cond_overload = (not np.isnan(interp_h_overload_corr)) and (interp_h_overload_corr >= h_overload_limit * TOLERANCE_FACTOR)
         
         if cond_rated and cond_churn and cond_overload:
-            # 합격!
             motor_corr = _calculate_motor(p_corr, p_overload_corr, standard_motors)
-            
-            # 동력 초과율 계산
             p_ratio_100 = (p_corr / motor_corr * 100) if motor_corr and not pd.isna(motor_corr) else 0.0
             p_ratio_150 = (p_overload_corr / motor_corr * 100) if motor_corr and not pd.isna(motor_corr) else 0.0
 
@@ -203,7 +188,6 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                 "동력초과(150%)": p_ratio_150
             }
 
-    # 모든 보정 시도 실패 시 (0% 기준으로 사유 리턴)
     q_orig = target_q
     interp_h_orig = np.interp(q_orig, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
     q_over_orig = 1.5 * q_orig
@@ -238,6 +222,10 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         model_df = df_r[df_r[m_r] == model].sort_values(q_col)
         if model_df.empty: continue
         
+        # 속도 최적화를 위해 간단한 범위 체크 후 분석
+        if not (model_df[q_col].max() * 1.1 >= target_q and model_df[h_col].max() >= target_h):
+            continue
+
         res = _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, STANDARD_MOTORS)
         
         if "❌" not in res['선정 가능']:
@@ -249,7 +237,6 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
     
     if not candidates: return None
     
-    # 1순위: 보정률 낮은 순, 2순위: 모터 작은 순
     candidates.sort(key=lambda x: (x['보정률'], x['모터']))
     
     best = candidates[0]
@@ -791,8 +778,8 @@ if uploaded_file:
                                 st.dataframe(task_df, use_container_width=True)
 
                             # (4) 검토 실행 버튼
-                            if st.button("🚀 소방 성능 기준 검토 실행"):
-                                with st.spinner(f"{len(task_df)}개 항목을 'reference data'와 비교 검토 중입니다... (최적화 적용됨)"):
+                            if st.button("🚀 소방 성능 기준 검토 실행 (속도 최적화)"):
+                                with st.spinner(f"{len(task_df)}개 항목 1차 고속 검토 중... (추천 모델 탐색은 잠시 후 버튼으로 실행하세요)"):
                                     results = []
                                     all_ref_models = df_r[m_r].unique()
                                     grouped_tasks = task_df.groupby('모델명')
@@ -827,7 +814,7 @@ if uploaded_file:
                                             q = task_row['요구 유량 (Q)']
                                             h = task_row['요구 양정 (H)']
                                             
-                                            # 고속 소방 분석 함수 호출
+                                            # 고속 소방 분석 함수 호출 (추천 탐색 X)
                                             op_result_dict = _batch_analyze_fire_point(model_df, q, h, q_col_total, h_col_total, k_col_total, STANDARD_MOTORS)
                                             
                                             # 결과 매핑
@@ -845,15 +832,8 @@ if uploaded_file:
                                                 # (디버깅용)
                                                 "정격 동력(kW)": op_result_dict['정격 동력(kW)'],
                                                 "최대 동력(kW)": op_result_dict['최대 동력(kW)'],
+                                                "추천모델": "" # 1차에선 빈 값
                                             }
-                                            
-                                            # [Feature 3 개선] 모든 항목에 대해 대안 모델 추천 (전수 조사)
-                                            rec_model_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model_name)
-                                            # 추천 모델이 있고, 현재 모델과 다른 경우만 결과에 추가 (중복 추천 방지)
-                                            if rec_model_str and rec_model_str.split(' ')[0] != model_name:
-                                                 result_detail["추천모델"] = rec_model_str
-                                            else:
-                                                 result_detail["추천모델"] = "대안 없음" if "❌" in result_detail["결과"] else ""
 
                                             base_info = base_info_template.copy()
                                             base_info.update({"요구 유량(Q)": q, "요구 양정(H)": h})
@@ -861,12 +841,48 @@ if uploaded_file:
                                             results.append(base_info)
                                     
                                 st.session_state.review_results_df = pd.DataFrame(results)
-                                st.success("선정표 검토 완료!")
+                                st.success("1차 검토 완료! 상세 분석을 원하시면 아래 버튼을 누르세요.")
+                                st.experimental_rerun()
 
-                # (5) 결과 표시
+                # (5) 결과 표시 및 심화 분석
                 if 'review_results_df' in st.session_state:
                     st.markdown("---")
+                    results_df = st.session_state.review_results_df
+                    
+                    # --------------------------------------------------------------
+                    # [신규] 심화 분석 버튼 (전체 모델 대상 대안 추천)
+                    # --------------------------------------------------------------
+                    # 아직 추천을 안 돌린 항목이 있는지 확인
+                    # (모든 항목에 대해 추천 돌려도 되지만, 속도를 위해 버튼으로 분리)
+                    
+                    st.info("👇 아래 버튼을 누르면 AI가 '모든 항목'에 대해 더 나은 대안 모델을 탐색합니다. (시간 소요됨)")
+                    if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행"):
+                        with st.spinner("전체 데이터에 대해 최적 모델을 전수 조사 중입니다... (커피 한 잔 하세요 ☕)"):
+                            progress_bar = st.progress(0)
+                            total_items = len(results_df)
+                            
+                            for idx, row_idx in enumerate(results_df.index):
+                                q = results_df.at[row_idx, '요구 유량(Q)']
+                                h = results_df.at[row_idx, '요구 양정(H)']
+                                model = results_df.at[row_idx, '선정 모델']
+                                
+                                # 추천 탐색
+                                rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model)
+                                
+                                # 결과 업데이트 (현재 모델과 다를 때만)
+                                if rec_str and rec_str.split(' ')[0] != model:
+                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = rec_str
+                                else:
+                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음" if "❌" in results_df.at[row_idx, '결과'] else ""
+                                
+                                progress_bar.progress((idx + 1) / total_items)
+                            
+                            st.success("전체 항목 분석 및 추천 완료!")
+                            st.experimental_rerun()
+
+
                     st.markdown("### 📊 검토 결과 요약")
+                    # 최신 상태의 DF 다시 로드
                     results_df = st.session_state.review_results_df
                     
                     # 결과 필터링
@@ -884,22 +900,23 @@ if uploaded_file:
                     if failed_df.empty:
                         st.info("선정 오류로 판단된 항목이 없습니다.")
                     else:
-                        # 오류 목록에도 추천 모델 표시
-                        failed_display = failed_df.copy()
-                        if '추천모델' in failed_display.columns:
-                            failed_display['비고'] = failed_display.apply(lambda x: f"💡 추천: {x['추천모델']}" if x['추천모델'] else "", axis=1)
-                        st.dataframe(failed_display.set_index("선정 모델"), use_container_width=True)
+                        # 추천 모델을 '비고' 컬럼 등으로 보기 좋게 매핑
+                        display_failed = failed_df.copy()
+                        display_failed['대안'] = display_failed['추천모델'].apply(lambda x: f"💡 {x}" if x else "")
+                        st.dataframe(display_failed.set_index("선정 모델"), use_container_width=True)
                     
                     st.markdown("#### ⚠️ 보정 필요 목록")
                     if warning_df.empty:
                         st.info("유량 보정이 필요한 항목이 없습니다.")
                     else:
-                        st.dataframe(warning_df.set_index("선정 모델"), use_container_width=True)
+                         display_warn = warning_df.copy()
+                         display_warn['대안'] = display_warn['추천모델'].apply(lambda x: f"💡 {x}" if x else "")
+                         st.dataframe(display_warn.set_index("선정 모델"), use_container_width=True)
                         
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     # ★ [최종 수정] 전체 검토 결과 피벗 테이블 (상세 정보 포함) ★
-                    # ★ Feature 1 & 2 반영: 유량보정률, 동력초과율 표시 (줄바꿈 & 100/150 구분)
-                    # ★ Feature 3 반영: 전체 모델에 대한 추천 표시
+                    # ★ Feature 1 & 2 반영: 줄바꿈 적용 및 100/150 구분
+                    # ★ Feature 3 반영: 모든 항목 추천 표시
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
                     
@@ -924,7 +941,9 @@ if uploaded_file:
                                 # 유량 보정 정보 (100% / 150% 구분 표시)
                                 corr = row.get('보정률(%)', 0)
                                 if corr > 0:
-                                    extras.append(f"💧 유량보정(100%): {corr:.1f}% 💧 유량보정(150%): {corr:.1f}%")
+                                    # 줄바꿈으로 구분
+                                    extras.append(f"💧 유량보정(100%): {corr:.1f}%")
+                                    extras.append(f"💧 유량보정(150%): {corr:.1f}%") # 기술적으로 100% 보정 시 150%도 동일 비율로 이동하므로 값은 같음
                                 
                                 # 동력 초과 정보 (100% / 150% 구분 표시)
                                 p100 = row.get('동력초과(100%)', 0)
@@ -933,7 +952,9 @@ if uploaded_file:
                                 if p100 > 100 or p150 > 100:
                                     p100_str = f"{p100:.0f}%" if p100 > 100 else "-"
                                     p150_str = f"{p150:.0f}%" if p150 > 100 else "-"
-                                    extras.append(f"⚡ 동력초과(100%): {p100_str} ⚡ 동력초과(150%): {p150_str}")
+                                    # 줄바꿈 없이 한 줄에, 혹은 줄바꿈으로
+                                    extras.append(f"⚡ 동력초과(100%): {p100_str}")
+                                    extras.append(f"⚡ 동력초과(150%): {p150_str}")
                                 
                                 # 대안 모델 추천 정보 (전체 모델 대상)
                                 rec = row.get('추천모델', '')
@@ -941,6 +962,7 @@ if uploaded_file:
                                      extras.append(f"💡 추천: {rec}")
 
                                 if extras:
+                                    # 최종 합치기 (줄바꿈 문자 \n 사용)
                                     return base_text + "\n" + "\n".join(extras)
                                 return base_text
 
@@ -959,7 +981,7 @@ if uploaded_file:
                             # Y축(양정)을 내림차순으로 정렬
                             pivot_df = pivot_df.sort_index(ascending=False)
                             
-                            st.dataframe(pivot_df, use_container_width=True)
+                            st.dataframe(pivot_df, use_container_width=True, height=800) # 높이 좀 늘림
                         
                         except Exception as e_pivot:
                             st.error(f"피벗 테이블 생성 중 오류 발생: {e_pivot}")
