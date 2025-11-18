@@ -7,8 +7,8 @@ from scipy.stats import t
 import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.9", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.9 (선정표 검토 버그 수정판)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.10", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.10 (선정표 범위 인식 개선)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -278,9 +278,14 @@ def render_filters(df, mcol, prefix):
     return df_f
 
 def parse_selection_table(df_selection_table):
+    """
+    [수정됨 v2.10] XRF 모델 선정표 파싱
+    - H(양정) 파싱 시, 숫자가 아닌 값이 나오면 즉시 중단(break)하여 
+      선정표 범위를 벗어난 불필요한 '미선정' 영역 생성을 방지함.
+    """
     try:
         q_col_indices = list(range(4, df_selection_table.shape[1], 3))
-        h_row_indices = list(range(15, df_selection_table.shape[0], 3))
+        # h_row_indices 제거 (직접 순회하며 break 처리)
         
         tasks = []
         q_values = {}
@@ -296,23 +301,29 @@ def parse_selection_table(df_selection_table):
             except (ValueError, TypeError):
                 continue 
         
-        # 2. 양정(H) 값 파싱
-        for r_idx in h_row_indices:
+        # 2. 양정(H) 값 파싱 (핵심 수정: 비정상 값 만나면 Stop)
+        for r_idx in range(15, df_selection_table.shape[0], 3):
             h_val_raw = str(df_selection_table.iloc[r_idx, 1])
-            if pd.isna(h_val_raw) or h_val_raw == "": continue
+            
+            # 빈 칸이면 종료 (표의 끝으로 간주)
+            if pd.isna(h_val_raw) or h_val_raw.strip() == "":
+                break
+            
             try:
+                # "30(m)" 형태 처리
                 h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
-                h_values[r_idx] = float(h_val_clean)
+                val = float(h_val_clean)
+                h_values[r_idx] = val
             except (ValueError, TypeError):
-                continue 
+                # 숫자로 변환 불가능한 텍스트(주석 등)를 만나면 종료
+                break
         
-        # 3. 교차 지점 파싱 (완전 탐색)
+        # 3. 교차 지점 파싱 (유효한 Q, H 범위 내에서만 수행)
         for r_idx in h_values:
             for c_idx in q_values:
                 raw_cell = df_selection_table.iloc[r_idx, c_idx]
                 model_name = str(raw_cell).strip()
                 
-                # [핵심 수정] XRF가 포함되면 모델명 사용, 그 외엔 무조건 '미선정' 처리
                 if "XRF" in model_name:
                     pass
                 else:
