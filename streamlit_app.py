@@ -4,11 +4,11 @@ import plotly.graph_objs as go
 import plotly.figure_factory as ff
 import numpy as np
 from scipy.stats import t
-import re  # 파이썬 내장 라이브러리 (설치 불필요)
+import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.7", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.7 (전체 결과 포함)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.8", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.8 (완전 탐색)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -276,6 +276,141 @@ def render_filters(df, mcol, prefix):
         df_f = df[df[mcol].isin(sel)] if sel else pd.DataFrame()
     return df_f
 
+def add_traces(fig, df, mcol, xcol, ycol, models, mode, line_style=None, name_suffix=""):
+    for m in models:
+        sub = df[df[mcol] == m].sort_values(xcol)
+        if sub.empty or ycol not in sub.columns: continue
+        fig.add_trace(go.Scatter(x=sub[xcol], y=sub[ycol], mode=mode, name=m + name_suffix, line=line_style or {}))
+
+def add_bep_markers(fig, df, mcol, qcol, ycol, models):
+    for m in models:
+        model_df = df[df[mcol] == m]
+        if not model_df.empty and 'Efficiency' in model_df.columns and not model_df['Efficiency'].isnull().all():
+            bep_row = model_df.loc[model_df['Efficiency'].idxmax()]
+            fig.add_trace(go.Scatter(x=[bep_row[qcol]], y=[bep_row[ycol]], mode='markers', marker=dict(symbol='star', size=15, color='gold'), name=f'{m} BEP'))
+
+def add_guide_lines(fig, h_line, v_line):
+    if h_line is not None and h_line > 0:
+        fig.add_shape(type="line", x0=0, x1=1, xref="paper", y0=h_line, y1=h_line, yref="y", line=dict(color="gray", dash="dash"))
+    if v_line is not None and v_line > 0:
+        fig.add_shape(type="line", x0=v_line, x1=v_line, xref="x", y0=0, y1=1, yref="paper", line=dict(color="gray", dash="dash"))
+
+def render_chart(fig, key):
+    fig.update_layout(dragmode='pan', xaxis=dict(fixedrange=False), yaxis=dict(fixedrange=False), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    st.plotly_chart(fig, use_container_width=True, config={'scrollZoom': True, 'displaylogo': False}, key=key)
+
+def perform_validation_analysis(df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col, models_to_validate, analysis_type):
+    all_results = {}
+    for model in models_to_validate:
+        model_summary = []
+        model_r_df = df_r[(df_r[m_r] == model) & (df_r[y_r_col].notna())].sort_values(by=q_r)
+        model_d_df = df_d[(df_d[m_d] == model) & (df_d[y_d_col].notna())]
+        if model_r_df.empty or model_d_df.empty: continue
+        
+        max_q = model_r_df[q_r].max()
+        validation_q = np.linspace(0, max_q, 10)
+        ref_y = np.interp(validation_q, model_r_df[q_r], model_r_df[y_r_col])
+        test_ids = model_d_df[test_id_col].unique()
+        interpolated_y_samples = {q: [] for q in validation_q}
+        for test_id in test_ids:
+            test_df = model_d_df[model_d_df[test_id_col] == test_id].sort_values(by=q_d)
+            if len(test_df) < 2: continue
+            interp_y = np.interp(validation_q, test_df[q_d], test_df[y_d_col])
+            for i, q in enumerate(validation_q):
+                interpolated_y_samples[q].append(interp_y[i])
+        
+        for i, q in enumerate(validation_q):
+            samples = np.array(interpolated_y_samples[q])
+            n = len(samples)
+            base_col_name = f"기준 {analysis_type}"
+            mean_col_name = "평균"
+            if n < 2:
+                model_summary.append({
+                    "모델명": model, "검증 유량(Q)": q, base_col_name: ref_y[i], 
+                    "시험 횟수(n)": n, mean_col_name: np.nan, "표준편차": np.nan, 
+                    "95% CI 하한": np.nan, "95% CI 상한": np.nan, "유효성": "판단불가",
+                    "_original_q": q
+                })
+                continue
+            
+            mean_y, std_dev = np.mean(samples), np.std(samples, ddof=1)
+            std_err = std_dev / np.sqrt(n)
+            t_critical = t.ppf(0.975, df=n-1)
+            margin_of_error = t_critical * std_err
+            ci_lower, ci_upper = mean_y - margin_of_error, mean_y + margin_of_error
+            is_valid = "✅ 유효" if ci_lower <= ref_y[i] <= ci_upper else "❌ 벗어남"
+            
+            model_summary.append({
+                "모델명": model, "검증 유량(Q)": f"{q:.2f}", base_col_name: f"{ref_y[i]:.2f}",
+                "시험 횟수(n)": n, mean_col_name: f"{mean_y:.2f}", "표준편차": f"{std_dev:.2f}",
+                "95% CI 하한": f"{ci_lower:.2f}", "95% CI 상한": f"{ci_upper:.2f}", "유효성": is_valid,
+                "_original_q": q
+            })
+        
+        all_results[model] = { 'summary': pd.DataFrame(model_summary), 'samples': interpolated_y_samples }
+    return all_results
+
+def parse_selection_table(df_selection_table):
+    """
+    [수정됨 v2.8] 사용자가 업로드한 'XRF 모델 선정표' 파싱
+    - XRF가 포함된 셀은 모델로 인식
+    - 그 외의 모든 텍스트/공란은 '미선정'으로 강제 할당하여 분석 누락 방지
+    """
+    try:
+        q_col_indices = list(range(4, df_selection_table.shape[1], 3))
+        h_row_indices = list(range(15, df_selection_table.shape[0], 3))
+        
+        tasks = []
+        q_values = {}
+        h_values = {}
+
+        # 1. 유량(Q) 값 파싱
+        for c_idx in q_col_indices:
+            q_val_raw = str(df_selection_table.iloc[10, c_idx])
+            if pd.isna(q_val_raw) or q_val_raw == "": continue
+            try:
+                q_val_clean = q_val_raw.split('(')[0].strip()
+                q_values[c_idx] = float(q_val_clean)
+            except (ValueError, TypeError):
+                continue 
+        
+        # 2. 양정(H) 값 파싱
+        for r_idx in h_row_indices:
+            h_val_raw = str(df_selection_table.iloc[r_idx, 1])
+            if pd.isna(h_val_raw) or h_val_raw == "": continue
+            try:
+                h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
+                h_values[r_idx] = float(h_val_clean)
+            except (ValueError, TypeError):
+                continue 
+        
+        # 3. 교차 지점 파싱 (완전 탐색)
+        for r_idx in h_values:
+            for c_idx in q_values:
+                raw_cell = df_selection_table.iloc[r_idx, c_idx]
+                model_name = str(raw_cell).strip()
+                
+                # XRF가 포함되어 있으면 모델명으로 인정
+                if "XRF" in model_name:
+                    pass
+                # 그 외 모든 경우(공란, 특수문자 등)는 미선정으로 처리
+                else:
+                    model_name = "미선정"
+                
+                tasks.append({
+                    "모델명": model_name,
+                    "요구 유량 (Q)": q_values[c_idx],
+                    "요구 양정 (H)": h_values[r_idx],
+                    "_source_cell": f"[Row {r_idx + 1}, Col {chr(65 + c_idx)}]"
+                })
+        
+        return pd.DataFrame(tasks)
+    
+    except Exception as e:
+        st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
+        return pd.DataFrame()
+
+# ... (이하 시각화 함수들 동일) ...
 def add_traces(fig, df, mcol, xcol, ycol, models, mode, line_style=None, name_suffix=""):
     for m in models:
         sub = df[df[mcol] == m].sort_values(xcol)
