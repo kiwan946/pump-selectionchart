@@ -4,11 +4,11 @@ import plotly.graph_objs as go
 import plotly.figure_factory as ff
 import numpy as np
 from scipy.stats import t
-import re
+import re  # 파이썬 내장 라이브러리 (설치 불필요)
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.6", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.6 (공란 분석 포함)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.7", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.7 (전체 결과 포함)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -215,9 +215,6 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
 
 # [추천 시스템] 대안 모델 탐색 (최적화 적용)
 def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assigned_model):
-    
-    # 1. 현재 할당된 모델의 시리즈 식별 (예: "XRF215-...")
-    # 할당된 모델이 '미선정'이거나 인식이 안 되면 전체 검색
     match = re.search(r"(XRF\d+)", str(assigned_model))
     target_series_subset = []
     
@@ -225,11 +222,9 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         current_series = match.group(1)
         if current_series in SERIES_ORDER:
             curr_idx = SERIES_ORDER.index(current_series)
-            # [최적화] 현재 시리즈의 2단계 아래부터 끝까지만 탐색
             start_idx = max(0, curr_idx - 2)
             target_series_subset = SERIES_ORDER[start_idx:]
     
-    # 2. 탐색 대상 모델 리스트업
     if target_series_subset:
         candidate_models = df_r[df_r['Series'].isin(target_series_subset)][m_r].unique()
     else:
@@ -243,7 +238,6 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         model_df = df_r[df_r[m_r] == model].sort_values(q_col)
         if model_df.empty: continue
         
-        # 물리적 범위 1차 필터링
         if not (model_df[q_col].max() * 1.1 >= target_q and model_df[h_col].max() >= target_h):
             continue
 
@@ -282,66 +276,6 @@ def render_filters(df, mcol, prefix):
         df_f = df[df[mcol].isin(sel)] if sel else pd.DataFrame()
     return df_f
 
-def parse_selection_table(df_selection_table):
-    """
-    [수정됨] 사용자가 업로드한 'XRF 모델 선정표' 파싱
-    - 공란(빈칸)이더라도 Q와 H가 유효하면 '미선정' 상태로 추가하여 분석 대상에 포함시킴
-    """
-    try:
-        q_col_indices = list(range(4, df_selection_table.shape[1], 3))
-        h_row_indices = list(range(15, df_selection_table.shape[0], 3))
-        
-        tasks = []
-        q_values = {}
-        h_values = {}
-
-        # 1. 유량(Q) 값 파싱
-        for c_idx in q_col_indices:
-            q_val_raw = str(df_selection_table.iloc[10, c_idx])
-            if pd.isna(q_val_raw) or q_val_raw == "": continue
-            try:
-                q_val_clean = q_val_raw.split('(')[0].strip()
-                q_values[c_idx] = float(q_val_clean)
-            except (ValueError, TypeError):
-                continue 
-        
-        # 2. 양정(H) 값 파싱
-        for r_idx in h_row_indices:
-            h_val_raw = str(df_selection_table.iloc[r_idx, 1])
-            if pd.isna(h_val_raw) or h_val_raw == "": continue
-            try:
-                h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
-                h_values[r_idx] = float(h_val_clean)
-            except (ValueError, TypeError):
-                continue 
-        
-        # 3. 교차 지점의 모델명 파싱 (빈칸 포함)
-        for r_idx in h_values:
-            for c_idx in q_values:
-                raw_cell = df_selection_table.iloc[r_idx, c_idx]
-                model_name = str(raw_cell).strip()
-                
-                # 'nan' 문자열이나 빈 문자열 처리 -> "미선정"으로 할당
-                if pd.isna(raw_cell) or model_name.lower() == 'nan' or model_name == "":
-                    model_name = "미선정"
-                
-                # 모델명이 있거나, '미선정' 인 경우 모두 추가
-                # (단, 엑셀의 다른 텍스트가 섞일 수 있으므로 XRF나 미선정인 경우만)
-                if "XRF" in model_name or model_name == "미선정":
-                    tasks.append({
-                        "모델명": model_name,
-                        "요구 유량 (Q)": q_values[c_idx],
-                        "요구 양정 (H)": h_values[r_idx],
-                        "_source_cell": f"[Row {r_idx + 1}, Col {chr(65 + c_idx)}]"
-                    })
-        
-        return pd.DataFrame(tasks)
-    
-    except Exception as e:
-        st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
-        return pd.DataFrame()
-
-# ... (이하 add_traces, add_bep_markers, add_guide_lines, render_chart, display_validation_output 함수는 기존과 동일) ...
 def add_traces(fig, df, mcol, xcol, ycol, models, mode, line_style=None, name_suffix=""):
     for m in models:
         sub = df[df[mcol] == m].sort_values(xcol)
@@ -928,16 +862,8 @@ if uploaded_file:
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
                     
-                    success_and_warn_df = results_df[~results_df['결과'].str.contains("❌")].copy()
-                    # 선정 불가 항목도 표시하고 싶다면 아래 줄을 주석 처리하고 results_df 전체를 쓰면 됨.
-                    # 하지만 보통 피벗은 '성공한 것'들의 분포를 보므로 여기서는 성공/보정 항목만 남김.
-                    # (사용자 요청에 따라 '선정 불가'도 보고 싶다면 로직 변경 가능)
-                    
-                    # 만약 '선정 불가'도 피벗에 포함하고 싶다면:
-                    # display_pivot_source = results_df.copy()
-                    
-                    # 여기서는 기존대로 성공+보정 항목만 표시 (선정 불가는 목록으로 확인)
-                    display_pivot_source = success_and_warn_df
+                    # 기존 필터 제거: 전체 결과 표시 (선정 불가 포함)
+                    display_pivot_source = results_df
                     
                     if display_pivot_source.empty:
                         st.info("피벗 테이블에 표시할 항목이 없습니다.")
@@ -953,8 +879,12 @@ if uploaded_file:
                                 if row['선정 모델'] == "미선정":
                                     base_text = "❌ 선정불가"
                                 else:
+                                    # 모델명과 모터 용량
                                     base_text = f"{row['선정 모델']} {format_motor(row['선정 모터(kW)'])}"
-                                
+                                    # 만약 '❌ 사용 불가' 같은 게 결과에 있으면 앞에 ❌ 붙여줌
+                                    if "❌" in str(row['결과']):
+                                         base_text = f"❌ {base_text}"
+
                                 extras = []
                                 
                                 # 유량 보정
