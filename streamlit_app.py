@@ -4,11 +4,11 @@ import plotly.graph_objs as go
 import plotly.figure_factory as ff
 import numpy as np
 from scipy.stats import t
-import re  # 정규식 사용을 위해 추가
+import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.4", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.4 (스마트 탐색 최적화)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.5", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.5 (조건부 탐색 최적화)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -40,7 +40,6 @@ def load_sheet(uploaded_file, sheet_name):
         if not mcol: return None, pd.DataFrame()
         if 'Series' in df.columns: df = df.drop(columns=['Series'])
         
-        # Series 컬럼 생성 (중요: 탐색 최적화에 사용됨)
         df['Series'] = df[mcol].astype(str).str.extract(r"(XRF\d+)")
         df['Series'] = pd.Categorical(df['Series'], categories=SERIES_ORDER, ordered=True)
         df = df.sort_values('Series')
@@ -214,10 +213,7 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
         "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0
     }
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [최적화 완료] 대안 모델 추천 함수 v2.4 ★
-# ★ - 할당된 모델의 시리즈를 인식하여 (현재 인덱스 - 2) 이상의 시리즈만 탐색
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# [추천 시스템] 대안 모델 탐색 (최적화 적용)
 def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assigned_model):
     
     # 1. 현재 할당된 모델의 시리즈 식별 (예: "XRF215-...")
@@ -228,16 +224,14 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         current_series = match.group(1)
         if current_series in SERIES_ORDER:
             curr_idx = SERIES_ORDER.index(current_series)
-            # [최적화 핵심] 현재 시리즈의 2단계 아래부터 끝까지만 탐색 범위로 설정
+            # [최적화 핵심] 현재 시리즈의 2단계 아래부터 끝까지만 탐색
             start_idx = max(0, curr_idx - 2)
             target_series_subset = SERIES_ORDER[start_idx:]
     
     # 2. 탐색 대상 모델 리스트업
     if target_series_subset:
-        # 'Series' 컬럼은 load_sheet에서 이미 생성되어 있음
         candidate_models = df_r[df_r['Series'].isin(target_series_subset)][m_r].unique()
     else:
-        # 시리즈 식별 불가 시 전체 탐색 (Fallback)
         candidate_models = df_r[m_r].unique()
 
     candidates = []
@@ -248,7 +242,7 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         model_df = df_r[df_r[m_r] == model].sort_values(q_col)
         if model_df.empty: continue
         
-        # 물리적 범위 1차 필터링 (속도 향상)
+        # 물리적 범위 1차 필터링
         if not (model_df[q_col].max() * 1.1 >= target_q and model_df[h_col].max() >= target_h):
             continue
 
@@ -878,28 +872,33 @@ if uploaded_file:
                     # --------------------------------------------------------------
                     # [신규] 심화 분석 버튼 (전체 모델 대상 대안 추천)
                     # --------------------------------------------------------------
-                    # 아직 추천을 안 돌린 항목이 있는지 확인
-                    # (모든 항목에 대해 추천 돌려도 되지만, 속도를 위해 버튼으로 분리)
+                    st.info("👇 아래 버튼을 누르면 AI가 '선정 오류' 및 '보정 필요' 항목에 대해 더 나은 대안 모델을 탐색합니다. (합격 모델은 자동 건너뜀)")
                     
-                    st.info("👇 아래 버튼을 누르면 AI가 '모든 항목'에 대해 더 나은 대안 모델을 탐색합니다. (시간 소요됨)")
-                    if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행"):
-                        with st.spinner("전체 데이터에 대해 최적 모델을 전수 조사 중입니다... (커피 한 잔 하세요 ☕)"):
+                    if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행 (스마트 최적화)"):
+                        with st.spinner("최적 모델 탐색 중... (합격 모델 건너뜀, 시리즈 최적화 적용)"):
                             progress_bar = st.progress(0)
                             total_items = len(results_df)
                             
                             for idx, row_idx in enumerate(results_df.index):
+                                current_status = results_df.at[row_idx, '결과']
+                                
+                                # [최적화 1] 이미 완벽하면(✅) 건너뛰기
+                                if "✅" in current_status:
+                                    st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
+                                    progress_bar.progress((idx + 1) / total_items)
+                                    continue
+
+                                # [최적화 2] 대안 탐색 (find_recommendation 내부에서 시리즈 가지치기 적용됨)
                                 q = results_df.at[row_idx, '요구 유량(Q)']
                                 h = results_df.at[row_idx, '요구 양정(H)']
                                 model = results_df.at[row_idx, '선정 모델']
                                 
-                                # 추천 탐색
                                 rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model)
                                 
-                                # 결과 업데이트 (현재 모델과 다를 때만)
                                 if rec_str and rec_str.split(' ')[0] != model:
                                      st.session_state.review_results_df.at[row_idx, '추천모델'] = rec_str
                                 else:
-                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음" if "❌" in results_df.at[row_idx, '결과'] else ""
+                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음" if "❌" in current_status else ""
                                 
                                 progress_bar.progress((idx + 1) / total_items)
                             
@@ -908,12 +907,11 @@ if uploaded_file:
 
 
                     st.markdown("### 📊 검토 결과 요약")
-                    # 최신 상태의 DF 다시 로드
                     results_df = st.session_state.review_results_df
                     
                     # 결과 필터링
                     failed_df = results_df[results_df['결과'].str.contains("❌")]
-                    warning_df = results_df[~results_df['결과'].str.contains("❌|✅")] # "보정" 등
+                    warning_df = results_df[~results_df['결과'].str.contains("❌|✅")] 
                     success_df = results_df[results_df['결과'] == "✅"]
                     
                     res_col1, res_col2, res_col3, res_col4 = st.columns(4)
@@ -926,7 +924,6 @@ if uploaded_file:
                     if failed_df.empty:
                         st.info("선정 오류로 판단된 항목이 없습니다.")
                     else:
-                        # 추천 모델을 '비고' 컬럼 등으로 보기 좋게 매핑
                         display_failed = failed_df.copy()
                         display_failed['대안'] = display_failed['추천모델'].apply(lambda x: f"💡 {x}" if x else "")
                         st.dataframe(display_failed.set_index("선정 모델"), use_container_width=True)
@@ -941,73 +938,60 @@ if uploaded_file:
                         
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     # ★ [최종 수정] 전체 검토 결과 피벗 테이블 (상세 정보 포함) ★
-                    # ★ Feature 1 & 2 반영: 줄바꿈 적용 및 100/150 구분
-                    # ★ Feature 3 반영: 모든 항목 추천 표시
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
                     
-                    # 피벗 테이블 대상: 성공(✅)과 보정(⚠️) 항목
                     success_and_warn_df = results_df[~results_df['결과'].str.contains("❌")].copy()
                     
                     if success_and_warn_df.empty:
                         st.info("피벗 테이블에 표시할 '선정 가능' 또는 '보정 필요' 항목이 없습니다.")
                     else:
                         try:
-                            # 1. 모터 포맷팅
                             def format_motor(kw):
                                 if pd.isna(kw): return "(?kW)"
                                 if kw == int(kw): return f"({int(kw)}kW)"
                                 return f"({kw}kW)"
                             
-                            # 2. 셀에 표시할 텍스트 생성 (Feature 1, 2, 3 반영)
                             def create_display_text(row):
                                 base_text = f"{row['선정 모델']} {format_motor(row['선정 모터(kW)'])}"
                                 extras = []
                                 
-                                # 유량 보정 정보 (100% / 150% 구분 표시)
                                 corr = row.get('보정률(%)', 0)
                                 if corr > 0:
-                                    # 줄바꿈으로 구분
                                     extras.append(f"💧 유량보정(100%): {corr:.1f}%")
-                                    extras.append(f"💧 유량보정(150%): {corr:.1f}%") # 기술적으로 100% 보정 시 150%도 동일 비율로 이동하므로 값은 같음
+                                    extras.append(f"💧 유량보정(150%): {corr:.1f}%")
                                 
-                                # 동력 초과 정보 (100% / 150% 구분 표시)
                                 p100 = row.get('동력초과(100%)', 0)
                                 p150 = row.get('동력초과(150%)', 0)
                                 
                                 if p100 > 100 or p150 > 100:
                                     p100_str = f"{p100:.0f}%" if p100 > 100 else "-"
                                     p150_str = f"{p150:.0f}%" if p150 > 100 else "-"
-                                    # 줄바꿈 없이 한 줄에, 혹은 줄바꿈으로
                                     extras.append(f"⚡ 동력초과(100%): {p100_str}")
                                     extras.append(f"⚡ 동력초과(150%): {p150_str}")
                                 
-                                # 대안 모델 추천 정보 (전체 모델 대상)
                                 rec = row.get('추천모델', '')
                                 if rec and rec != "대안 없음":
                                      extras.append(f"💡 추천: {rec}")
 
                                 if extras:
-                                    # 최종 합치기 (줄바꿈 문자 \n 사용)
                                     return base_text + "\n" + "\n".join(extras)
                                 return base_text
 
                             success_and_warn_df['표시값'] = success_and_warn_df.apply(create_display_text, axis=1)
 
-                            # 3. 피벗 테이블 생성
                             pivot_df = pd.pivot_table(
                                 success_and_warn_df, 
                                 values='표시값', 
                                 index='요구 양정(H)', 
                                 columns='요구 유량(Q)', 
-                                aggfunc='first', # 중복 시 첫 번째 값 사용
-                                fill_value=""    # 빈 셀은 ""로 채우기
+                                aggfunc='first', 
+                                fill_value="" 
                             )
                             
-                            # Y축(양정)을 내림차순으로 정렬
                             pivot_df = pivot_df.sort_index(ascending=False)
                             
-                            st.dataframe(pivot_df, use_container_width=True, height=800) # 높이 좀 늘림
+                            st.dataframe(pivot_df, use_container_width=True, height=800)
                         
                         except Exception as e_pivot:
                             st.error(f"피벗 테이블 생성 중 오류 발생: {e_pivot}")
