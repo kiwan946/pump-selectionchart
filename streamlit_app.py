@@ -7,8 +7,8 @@ from scipy.stats import t
 import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.8", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.8 (공란 제거 및 완전 탐색)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.9", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.9 (선정표 검토 버그 수정판)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -278,11 +278,6 @@ def render_filters(df, mcol, prefix):
     return df_f
 
 def parse_selection_table(df_selection_table):
-    """
-    [수정됨 v2.8] 사용자가 업로드한 'XRF 모델 선정표' 파싱
-    - 공란, 특수문자, '선정불가' 텍스트 등 무엇이든 간에
-    - Q와 H 좌표가 존재한다면 무조건 '미선정'으로 할당하여 누락 방지
-    """
     try:
         q_col_indices = list(range(4, df_selection_table.shape[1], 3))
         h_row_indices = list(range(15, df_selection_table.shape[0], 3))
@@ -772,7 +767,7 @@ if uploaded_file:
                                         if model_name not in all_ref_models:
                                             result_detail = {
                                                 "결과": "❌ 모델 없음", 
-                                                "상세": "Reference 데이터에 해당 모델명이 없습니다.",
+                                                "상세": "Reference 데이터에 해당 모델이 없습니다.",
                                                 "정격 예상 양정": "N/A", "체절 양정 (예상)": "N/A", "체절 양정 (기준)": "N/A",
                                                 "최대운전 양정 (예상)": "N/A", "최대운전 양정 (기준)": "N/A", 
                                                 "정격 동력(kW)": np.nan, "최대 동력(kW)": np.nan, "선정 모터(kW)": np.nan,
@@ -851,24 +846,40 @@ if uploaded_file:
                     # --------------------------------------------------------------
                     st.info("👇 아래 버튼을 누르면 AI가 '선정 오류' 및 '보정 필요' 항목에 대해 더 나은 대안 모델을 탐색합니다. (합격 모델은 자동 건너뜀)")
                     
-                    if st.button("🕵️ 대안 모델 추천 실행"):
-                        with st.spinner("최적 모델 탐색 중..."):
-                            # DataFrame 복사본 생성 (업데이트 누락 방지)
-                            results_df = st.session_state.review_results_df.copy()
+                    if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행 (스마트 최적화)"):
+                        with st.spinner("최적 모델 탐색 중... (합격 모델 건너뜀, 시리즈 최적화 적용)"):
+                            progress_bar = st.progress(0)
+                            total_items = len(results_df)
                             
-                            for idx, row in results_df.iterrows():
-                                # 이미 합격인 경우 건너뜀
-                                if "✅" in str(row['결과']): continue
+                            for idx, row_idx in enumerate(results_df.index):
+                                current_status = results_df.at[row_idx, '결과']
                                 
-                                # 대안 탐색
-                                rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, row['요구 유량(Q)'], row['요구 양정(H)'], row['선정 모델'])
+                                # [최적화 1] 이미 완벽하면(✅) 건너뛰기
+                                if "✅" in current_status:
+                                    st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
+                                    progress_bar.progress((idx + 1) / total_items)
+                                    continue
+
+                                # [최적화 2] 대안 탐색 (find_recommendation 내부에서 시리즈 가지치기 적용됨)
+                                q = results_df.at[row_idx, '요구 유량(Q)']
+                                h = results_df.at[row_idx, '요구 양정(H)']
+                                model = results_df.at[row_idx, '선정 모델']
                                 
-                                # [수정 2] 값이 없으면 "대안 없음"으로 명확하게 할당
-                                final_rec = rec_str if rec_str else "대안 없음"
-                                results_df.loc[idx, '추천모델'] = final_rec
+                                rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model)
                                 
-                            st.session_state.review_results_df = results_df
-                            st.success("추천 완료!")
+                                if rec_str:
+                                     # 현재 모델과 추천 모델이 다른 경우에만 업데이트
+                                     if str(rec_str).split(' ')[0] != str(model):
+                                          st.session_state.review_results_df.at[row_idx, '추천모델'] = str(rec_str)
+                                     else:
+                                          st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
+                                else:
+                                     # 대안이 없으면 (None 리턴 시)
+                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음"
+                                
+                                progress_bar.progress((idx + 1) / total_items)
+                            
+                            st.success("전체 항목 분석 및 추천 완료!")
                             st.rerun()
 
 
@@ -919,37 +930,59 @@ if uploaded_file:
                                 return f"({kw}kW)"
                             
                             def create_display_text(row):
-                            model_val = row['선정 모델']
-                            # [수정 1] 값을 가져올 때 문자열로 변환 및 공백 제거하여 비교 확실하게 처리
-                            raw_rec = row.get('추천모델', '')
-                            rec_val = str(raw_rec).strip() if pd.notna(raw_rec) else ""
-                            
-                            # [Case 1] 미선정(공란) 처리 로직
-                            if model_val == "미선정":
-                                base_text = "❌ 선정불가"
-                                # "대안 없음"이 정확히 매칭되거나 포함되어 있을 경우
-                                if rec_val == "대안 없음": 
-                                    return base_text + "\n(대안모델 없음)"
-                                # 추천 모델이 존재할 경우 (빈 문자열이 아니고, nan도 아님)
-                                elif rec_val and rec_val != "nan": 
-                                    return base_text + f"\n💡 추천: {rec_val}"
-                                # 버튼 누르기 전 (빈 값)
-                                else: 
-                                    return base_text
-                            
-                            # [Case 2] 일반 모델 처리
-                            base_text = f"{model_val} {format_motor(row.get('선정 모터(kW)', np.nan))}"
-                            if "❌" in str(row['결과']): base_text = f"❌ {base_text}"
-                            
-                            extras = []
-                            if row.get('보정률(%)', 0) > 0: extras.append(f"💧 보정:{row['보정률(%)']:.1f}%")
-                            p_max = max(row.get('동력초과(100%)', 0), row.get('동력초과(150%)', 0))
-                            if p_max > 100: extras.append(f"⚡ 초과:{p_max:.0f}%")
-                            
-                            if rec_val == "대안 없음": extras.append("(대안모델 없음)")
-                            elif rec_val and rec_val != "nan": extras.append(f"💡 추천: {rec_val}")
-                            
-                            return base_text + ("\n" + "\n".join(extras) if extras else "")
+                                model_val = str(row['선정 모델']).strip()
+                                
+                                # [버그 수정] 추천모델 값 가져오기 및 NaN/None 안전 처리
+                                rec_raw = row.get('추천모델', '')
+                                if pd.isna(rec_raw) or str(rec_raw).lower() == 'nan' or str(rec_raw).lower() == 'none':
+                                    rec_val = ""
+                                else:
+                                    rec_val = str(rec_raw).strip()
+
+                                result_val = str(row['결과'])
+
+                                # [Case 1] 엑셀 공란 (미선정)인 경우
+                                if "미선정" in model_val:
+                                    base_text = "❌ 선정불가"
+                                    
+                                    # 대안 모델 탐색 결과에 따른 텍스트 분기
+                                    if rec_val == "대안 없음":
+                                        return base_text + "\n(대안모델 없음)"
+                                    elif rec_val: # 추천 모델이 존재할 경우
+                                        return base_text + f"\n💡 추천: {rec_val}"
+                                    else: # 아직 추천 버튼을 누르기 전
+                                        return base_text
+
+                                # [Case 2] 모델이 기입되어 있는 경우
+                                else:
+                                    base_text = f"{model_val} {format_motor(row['선정 모터(kW)'])}"
+                                    
+                                    # '❌ 사용 불가' 등의 결과가 있으면 앞에 표시
+                                    if "❌" in result_val:
+                                        base_text = f"❌ {base_text}"
+
+                                    extras = []
+                                    
+                                    # 유량 보정 표시
+                                    corr = row.get('보정률(%)', 0)
+                                    if corr > 0:
+                                        extras.append(f"💧 유량보정: {corr:.1f}%")
+                                    
+                                    # 동력 초과 표시
+                                    p100 = row.get('동력초과(100%)', 0)
+                                    p150 = row.get('동력초과(150%)', 0)
+                                    if p100 > 100 or p150 > 100:
+                                        p_str = f"{max(p100, p150):.0f}%"
+                                        extras.append(f"⚡ 동력초과: {p_str}")
+                                    
+                                    # 추천 정보
+                                    if rec_val == "대안 없음":
+                                        extras.append("(대안모델 없음)")
+                                    elif rec_val:
+                                        extras.append(f"💡 추천: {rec_val}")
+
+                                    if extras:
+                                        return base_text + "\n" + "\n".join(extras)
                                     return base_text
 
                             # 표시값 컬럼 생성
