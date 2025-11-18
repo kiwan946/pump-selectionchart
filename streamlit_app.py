@@ -7,8 +7,8 @@ from scipy.stats import t
 import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.11", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.11 (좌표 범위 고정)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.12", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.12 (상세 결과 분리 표시)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -282,12 +282,10 @@ def parse_selection_table(df_selection_table):
     [수정됨 v2.11] 선정표 파싱 범위 사용자 지정 (하드코딩)
     - 유량(Q): E열(index 4) ~ DX열(index 127) | 행 index 10
     - 양정(H): 16행(index 15) ~ 129행(index 128) | B열(index 1)
-    - 이렇게 범위를 고정하여 불필요한 '미선정' 데이터 생성을 막습니다.
     """
     try:
         # 0-based index 설정
         # Q: E=4 ~ DX=127. Step=3.
-        # DX col index calculation: (4 * 26) + 24 - 1 = 127.
         Q_COL_START = 4
         Q_COL_END = 127 # inclusive
         Q_ROW_IDX = 10  # 11행
@@ -302,12 +300,8 @@ def parse_selection_table(df_selection_table):
         h_values = {}
 
         # 1. 유량(Q) 값 파싱 (E~DX)
-        # range의 end는 exclusive하므로 +1 해줌
         for c_idx in range(Q_COL_START, Q_COL_END + 1, 3):
-            # 안전장치: 업로드된 파일이 지정된 범위보다 작을 경우 에러 방지
-            if c_idx >= df_selection_table.shape[1]:
-                break
-
+            if c_idx >= df_selection_table.shape[1]: break
             q_val_raw = str(df_selection_table.iloc[Q_ROW_IDX, c_idx])
             if pd.isna(q_val_raw) or q_val_raw == "": continue
             try:
@@ -318,10 +312,7 @@ def parse_selection_table(df_selection_table):
         
         # 2. 양정(H) 값 파싱 (16행~129행)
         for r_idx in range(H_ROW_START, H_ROW_END + 1, 3):
-             # 안전장치
-            if r_idx >= df_selection_table.shape[0]:
-                break
-
+            if r_idx >= df_selection_table.shape[0]: break
             h_val_raw = str(df_selection_table.iloc[r_idx, H_COL_IDX])
             if pd.isna(h_val_raw) or h_val_raw == "": continue
             try:
@@ -333,10 +324,7 @@ def parse_selection_table(df_selection_table):
         # 3. 교차 지점 파싱 (유효한 Q, H 범위 내에서만 수행)
         for r_idx in h_values:
             for c_idx in q_values:
-                # 안전장치
-                if r_idx >= df_selection_table.shape[0] or c_idx >= df_selection_table.shape[1]:
-                    continue
-
+                if r_idx >= df_selection_table.shape[0] or c_idx >= df_selection_table.shape[1]: continue
                 raw_cell = df_selection_table.iloc[r_idx, c_idx]
                 model_name = str(raw_cell).strip()
                 
@@ -989,18 +977,21 @@ if uploaded_file:
                                         base_text = f"❌ {base_text}"
 
                                     extras = []
-                                    
-                                    # 유량 보정 표시
-                                    corr = row.get('보정률(%)', 0)
-                                    if corr > 0:
-                                        extras.append(f"💧 유량보정: {corr:.1f}%")
-                                    
-                                    # 동력 초과 표시
                                     p100 = row.get('동력초과(100%)', 0)
                                     p150 = row.get('동력초과(150%)', 0)
-                                    if p100 > 100 or p150 > 100:
-                                        p_str = f"{max(p100, p150):.0f}%"
-                                        extras.append(f"⚡ 동력초과: {p_str}")
+                                    corr = row.get('보정률(%)', 0)
+
+                                    # 100% 지점 상세 정보
+                                    info_100 = []
+                                    if p100 > 100: info_100.append(f"축동력 {p100-100:.1f}% 초과")
+                                    if corr > 0: info_100.append(f"유량보정 {corr:.1f}%")
+                                    if info_100: extras.append(f"[100%] " + " / ".join(info_100))
+
+                                    # 150% 지점 상세 정보
+                                    info_150 = []
+                                    if p150 > 100: info_150.append(f"축동력 {p150-100:.1f}% 초과")
+                                    if corr > 0: info_150.append(f"유량보정 {corr:.1f}%")
+                                    if info_150: extras.append(f"[150%] " + " / ".join(info_150))
                                     
                                     # 추천 정보
                                     if rec_val == "대안 없음":
