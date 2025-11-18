@@ -31,20 +31,19 @@ def calculate_efficiency(df, q_col, h_col, k_col):
     df_copy['Efficiency'] = np.where(shaft_power > 0, (hydraulic_power / shaft_power) * 100, 0)
     return df_copy
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [수정됨] load_sheet 함수 ★
-# ★ (모델명 컬럼을 찾는 로직을 제거 -> 사이드바에서 선택하도록 변경) ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def load_sheet(uploaded_file, sheet_name):
-    # 시트 이름이 없으면(None) 함수를 즉시 종료
-    if not sheet_name:
-        return pd.DataFrame() # mcol 대신 df만 반환
     try:
         df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
         df.columns = df.columns.str.strip()
-        return df # mcol을 찾지 않고 원본 df 반환
-    except Exception: # 시트가 존재하지 않는 등
-        return pd.DataFrame()
+        mcol = get_best_match_column(df, ["모델명", "모델", "Model"])
+        if not mcol: return None, pd.DataFrame()
+        if 'Series' in df.columns: df = df.drop(columns=['Series'])
+        df['Series'] = df[mcol].astype(str).str_extract(r"(XRF\d+)")
+        df['Series'] = pd.Categorical(df['Series'], categories=SERIES_ORDER, ordered=True)
+        df = df.sort_values('Series')
+        return mcol, df
+    except Exception:
+        return None, pd.DataFrame()
 
 def process_data(df, q_col, h_col, k_col):
     if df.empty: return df
@@ -170,7 +169,6 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
             q_required = np.interp(target_h, h_values_rev, q_values_rev)
             
             # Case 1a: 5% 초과 보정 (즉시 실패)
-            # (5% 이내 허용이므로 0.95*Q ~ 1.05*Q 까지 허용)
             if q_required < (0.95 * target_q) or q_required > (1.05 * target_q):
                 correction_pct = (1 - (q_required / target_q)) * 100
                 base_result["상세"] = f"5% 초과 유량 보정 필요 ({correction_pct:.1f}%)"
@@ -202,13 +200,6 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                     })
                     results.append(base_result)
                     continue # [성공 - 보정]
-                else:
-                    # [실패] 보정은 했으나 3점 미달
-                    base_result["상세"] = "보정 후 3점 기준 미달"
-                    if not cond1_ok: base_result["상세"] += " (체절 초과)"
-                    if not cond2_ok: base_result["상세"] += " (최대 미달)"
-                    results.append(base_result)
-                    continue # [실패]
         
         # 2. 정격점(Q) 기준 3점 검사 (1단계에서 성공/보정 판정을 받지 못한 경우)
         if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
@@ -611,80 +602,20 @@ def display_validation_output(model, validation_data, analysis_type, df_r, df_d,
             st.markdown("---")
 
 # --- 메인 애플리케이션 로직 ---
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [수정됨] 1. 기준 데이터 시트 선택 기능 추가 ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (성능곡선 데이터 시트 포함)", type=["xlsx", "xlsm"])
+uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (reference data 시트 포함)", type=["xlsx", "xlsm"])
 if uploaded_file:
-    # [수정] 엑셀 파일의 모든 시트 이름을 먼저 불러옵니다.
-    try:
-        xls = pd.ExcelFile(uploaded_file)
-        all_sheet_names = xls.sheet_names
-    except Exception as e:
-        st.error(f"엑셀 파일 로드 중 오류: {e}")
-        st.stop() # 여기서 중단
-
-    # [수정] 사이드바에 시트 선택 메뉴 추가
-    st.sidebar.title("⚙️ 분석 설정")
-    
-    # 'reference data'가 있으면 기본값으로, 없으면 첫 번째 시트를 기본값으로
-    default_ref_index = 0
-    if "reference data" in all_sheet_names:
-        default_ref_index = all_sheet_names.index("reference data")
-    
-    ref_sheet_name = st.sidebar.selectbox(
-        "1. 기준 데이터 시트 선택", 
-        all_sheet_names, 
-        index=default_ref_index
-    )
-    
-    # [수정] 선택된 시트 이름으로 데이터를 로드합니다. (모델명 컬럼 찾기 X)
-    df_r_orig = load_sheet(uploaded_file, ref_sheet_name)
-    
-    # (카탈로그와 편차 시트는 옵션이므로, 없어도 오류가 나지 않게 수정)
-    df_c_orig = load_sheet(uploaded_file, "catalog data")
-    df_d_orig = load_sheet(uploaded_file, "deviation data")
-    
-    # [수정] df_r_orig가 로드된 *후에* 모델명 컬럼을 사이드바에서 선택
-    if df_r_orig.empty: 
-        st.error(f"'{ref_sheet_name}' 시트를 찾을 수 없거나 데이터가 없습니다. 파일을 확인해주세요.")
+    m_r, df_r_orig = load_sheet(uploaded_file, "reference data"); m_c, df_c_orig = load_sheet(uploaded_file, "catalog data"); m_d, df_d_orig = load_sheet(uploaded_file, "deviation data")
+    if df_r_orig.empty: st.error("오류: 'reference data' 시트를 찾을 수 없거나 '모델명' 관련 컬럼이 없습니다. 파일을 확인해주세요.")
     else:
-        st.sidebar.markdown("### 2. 기준 데이터 컬럼 지정")
+        st.sidebar.title("⚙️ 분석 설정"); st.sidebar.markdown("### Total 탭 & 운전점 분석 컬럼 지정")
         all_columns_r = df_r_orig.columns.tolist()
-        
-        def safe_get_index(items, value_list, default=0):
-            if not items: return default
-            for value in value_list:
-                try: 
-                    return items.index(value)
-                except (ValueError, TypeError):
-                    continue # 다음 값으로 시도
-            return default # 못 찾으면 0
-            
-        # [수정] 모델명 컬럼을 사이드바에서 선택
-        m_col_r = st.sidebar.selectbox(
-            "기준 모델명 컬럼", 
-            all_columns_r, 
-            index=safe_get_index(all_columns_r, ["모델명", "모델", "Model"])
-        )
-
-        # [수정] 모델명 컬럼이 선택된 *후에* 'Series' 컬럼 추가
-        if 'Series' in df_r_orig.columns: df_r_orig = df_r_orig.drop(columns=['Series'])
-        df_r_orig['Series'] = df_r_orig[m_col_r].astype(str).str_extract(r"(XRF\d+)")
-        df_r_orig['Series'] = pd.Categorical(df_r_orig['Series'], categories=SERIES_ORDER, ordered=True)
-        df_r_orig = df_r_orig.sort_values('Series')
-        
-        # [수정] m_c, m_d는 get_best_match_column으로 자동 찾기 (옵션)
-        m_c = get_best_match_column(df_c_orig, ["모델명", "모델", "Model"])
-        m_d = get_best_match_column(df_d_orig, ["모델명", "모델", "Model"])
-
-        st.sidebar.markdown("### 3. Total 탭 & 운전점 분석 컬럼 지정")
+        def safe_get_index(items, value, default=0):
+            try: return items.index(value)
+            except (ValueError, TypeError): return default
         q_auto_r = get_best_match_column(df_r_orig, ["토출량", "유량"]); h_auto_r = get_best_match_column(df_r_orig, ["토출양정", "전양정"]); k_auto_r = get_best_match_column(df_r_orig, ["축동력"])
-        q_col_total = st.sidebar.selectbox("유량 (Flow) 컬럼", all_columns_r, index=safe_get_index(all_columns_r, [q_auto_r]))
-        h_col_total = st.sidebar.selectbox("양정 (Head) 컬럼", all_columns_r, index=safe_get_index(all_columns_r, [h_auto_r]))
-        k_col_total = st.sidebar.selectbox("축동력 (Power) 컬럼", all_columns_r, index=safe_get_index(all_columns_r, [k_auto_r]))
-        
-        # (옵션 시트 컬럼 찾기)
+        q_col_total = st.sidebar.selectbox("유량 (Flow) 컬럼", all_columns_r, index=safe_get_index(all_columns_r, q_auto_r))
+        h_col_total = st.sidebar.selectbox("양정 (Head) 컬럼", all_columns_r, index=safe_get_index(all_columns_r, h_auto_r))
+        k_col_total = st.sidebar.selectbox("축동력 (Power) 컬럼", all_columns_r, index=safe_get_index(all_columns_r, k_auto_r))
         q_c, h_c, k_c = (get_best_match_column(df_c_orig, ["토출량", "유량"]), get_best_match_column(df_c_orig, ["토출양정", "전양정"]), get_best_match_column(df_c_orig, ["축동력"]))
         q_d, h_d, k_d = (get_best_match_column(df_d_orig, ["토출량", "유량"]), get_best_match_column(df_d_orig, ["토출양정", "전양정"]), get_best_match_column(df_d_orig, ["축동력"]))
         test_id_col_d = get_best_match_column(df_d_orig, ["시험번호", "Test No", "Test ID"])
@@ -692,8 +623,6 @@ if uploaded_file:
             df_d_orig[test_id_col_d] = df_d_orig[test_id_col_d].astype(str).str.strip()
             df_d_orig[test_id_col_d].replace(['', 'nan'], np.nan, inplace=True)
             df_d_orig[test_id_col_d] = df_d_orig[test_id_col_d].ffill()
-        
-        # 데이터 처리
         df_r = process_data(df_r_orig, q_col_total, h_col_total, k_col_total); df_c = process_data(df_c_orig, q_c, h_c, k_c); df_d = process_data(df_d_orig, q_d, h_d, k_d)
         
         # '탭 리스트' 수정 (맨 뒤에 "🔥 선정표 검토 (AI)" 추가)
@@ -703,8 +632,8 @@ if uploaded_file:
         # ★★★★★★★★★★★★★★★★★★★ 'Total' 탭 (원본 유지) ★★★★★★★★★★★★★★★★★★★
         with tabs[0]:
             st.subheader("📊 Total - 통합 곡선 및 운전점 분석")
-            df_f = render_filters(df_r, m_col_r, "total") # m_r -> m_col_r
-            models = df_f[m_col_r].unique().tolist() if m_col_r and not df_f.empty else []
+            df_f = render_filters(df_r, m_r, "total")
+            models = df_f[m_r].unique().tolist() if m_r and not df_f.empty else []
             
             with st.expander("운전점 분석 (Operating Point Analysis)"):
                 st.markdown("#### 🎯 단일 운전점 기준 모델 검색")
@@ -732,8 +661,8 @@ if uploaded_file:
                     if not models: st.warning("먼저 분석할 시리즈나 모델을 선택해주세요.")
                     else:
                         with st.spinner("선택된 모델들을 분석 중입니다..."):
-                            if analysis_mode == "소방": op_results_df = analyze_fire_pump_point(df_r, models, target_q, target_h, m_col_r, q_col_total, h_col_total, k_col_total)
-                            else: op_results_df = analyze_operating_point(df_r, models, target_q, target_h, m_col_r, q_col_total, h_col_total, k_col_total)
+                            if analysis_mode == "소방": op_results_df = analyze_fire_pump_point(df_r, models, target_q, target_h, m_r, q_col_total, h_col_total, k_col_total)
+                            else: op_results_df = analyze_operating_point(df_r, models, target_q, target_h, m_r, q_col_total, h_col_total, k_col_total)
                             
                             if not op_results_df.empty: st.success(f"총 {len(op_results_df)}개의 모델을 찾았습니다."); st.dataframe(op_results_df, use_container_width=True)
                             else: st.info("요구 성능을 만족하는 모델을 찾지 못했습니다.")
@@ -788,7 +717,7 @@ if uploaded_file:
                                 if not model or pd.isna(model):
                                     continue
                                 
-                                if model not in df_r[m_col_r].unique():
+                                if model not in df_r[m_r].unique():
                                     results.append({
                                         '모델명': model, '요구 유량 (Q)': q, '요구 양정 (H)': h, '분석 모드': mode,
                                         '결과': '❌ 모델 없음',
@@ -797,9 +726,9 @@ if uploaded_file:
                                     continue
 
                                 if mode == "소방":
-                                    op_result_df = analyze_fire_pump_point(df_r, [model], q, h, m_col_r, q_col_total, h_col_total, k_col_total)
+                                    op_result_df = analyze_fire_pump_point(df_r, [model], q, h, m_r, q_col_total, h_col_total, k_col_total)
                                 else: # "기계"
-                                    op_result_df = analyze_operating_point(df_r, [model], q, h, m_col_r, q_col_total, h_col_total, k_col_total)
+                                    op_result_df = analyze_operating_point(df_r, [model], q, h, m_r, q_col_total, h_col_total, k_col_total)
                                     
                                 if not op_result_df.empty:
                                     res_row = op_result_df.iloc[0]
@@ -848,7 +777,7 @@ if uploaded_file:
             ref_show = st.checkbox("Reference 표시", value=True); cat_show = st.checkbox("Catalog 표시"); dev_show = st.checkbox("Deviation 표시")
             st.markdown(f"#### Q-H (유량-{h_col_total})")
             fig_h = go.Figure()
-            if ref_show and not df_f.empty: add_traces(fig_h, df_f, m_col_r, q_col_total, h_col_total, models, 'lines+markers'); add_bep_markers(fig_h, df_f, m_col_r, q_col_total, h_col_total, models)
+            if ref_show and not df_f.empty: add_traces(fig_h, df_f, m_r, q_col_total, h_col_total, models, 'lines+markers'); add_bep_markers(fig_h, df_f, m_r, q_col_total, h_col_total, models)
             if cat_show and not df_c.empty: add_traces(fig_h, df_c, m_c, q_c, h_c, models, 'lines+markers', line_style=dict(dash='dot'))
             if dev_show and not df_d.empty: add_traces(fig_h, df_d, m_d, q_d, h_d, models, 'markers')
             
@@ -873,13 +802,13 @@ if uploaded_file:
             add_guide_lines(fig_h, h_guide_h, v_guide_h); render_chart(fig_h, "total_qh")
             
             st.markdown("#### Q-kW (유량-축동력)"); fig_k = go.Figure()
-            if ref_show and not df_f.empty: add_traces(fig_k, df_f, m_col_r, q_col_total, k_col_total, models, 'lines+markers')
+            if ref_show and not df_f.empty: add_traces(fig_k, df_f, m_r, q_col_total, k_col_total, models, 'lines+markers')
             if cat_show and not df_c.empty: add_traces(fig_k, df_c, m_c, q_c, k_c, models, 'lines+markers', line_style=dict(dash='dot'))
             if dev_show and not df_d.empty: add_traces(fig_k, df_d, m_d, q_d, k_d, models, 'markers')
             add_guide_lines(fig_k, h_guide_k, v_guide_k); render_chart(fig_k, "total_qk")
             
             st.markdown("#### Q-Efficiency (유량-효율)"); fig_e = go.Figure()
-            if ref_show and not df_f.empty: add_traces(fig_e, df_f, m_col_r, q_col_total, 'Efficiency', models, 'lines+markers'); add_bep_markers(fig_e, df_f, m_col_r, q_col_total, 'Efficiency', models)
+            if ref_show and not df_f.empty: add_traces(fig_e, df_f, m_r, q_col_total, 'Efficiency', models, 'lines+markers'); add_bep_markers(fig_e, df_f, m_r, q_col_total, 'Efficiency', models)
             if cat_show and not df_c.empty: add_traces(fig_e, df_c, m_c, q_c, 'Efficiency', models, 'lines+markers', line_style=dict(dash='dot'))
             if dev_show and not df_d.empty: add_traces(fig_e, df_d, m_d, q_d, 'Efficiency', models, 'markers')
             add_guide_lines(fig_e, h_guide_e, v_guide_e); render_chart(fig_e, "total_qe")
@@ -888,13 +817,9 @@ if uploaded_file:
         for idx, sheet_name in enumerate(["Reference", "Catalog", "Deviation"]):
             with tabs[idx+1]:
                 st.subheader(f"📊 {sheet_name} Data")
-                # [수정] m_r -> m_col_r
-                df, mcol, df_orig_tab = (df_r, m_col_r, df_r_orig) if sheet_name == "Reference" else (df_c, m_c, df_c_orig) if sheet_name == "Catalog" else (df_d, m_d, df_d_orig)
+                df, mcol, df_orig = (df_r, m_r, df_r_orig) if sheet_name == "Reference" else (df_c, m_c, df_c_orig) if sheet_name == "Catalog" else (df_d, m_d, df_d_orig)
                 if df.empty: st.info(f"'{sheet_name.lower()}' 시트의 데이터가 없거나 처리할 수 없습니다."); continue
-                
-                # [수정] df_orig -> df_orig_tab
-                q_col_tab = get_best_match_column(df_orig_tab, ["토출량", "유량"]); h_col_tab = get_best_match_column(df_orig_tab, ["토출양정", "전양정"]); k_col_tab = get_best_match_column(df_orig_tab, ["축동력"])
-                
+                q_col_tab = get_best_match_column(df_orig, ["토출량", "유량"]); h_col_tab = get_best_match_column(df_orig, ["토출양정", "전양정"]); k_col_tab = get_best_match_column(df_orig, ["축동력"])
                 df_f_tab = render_filters(df, mcol, sheet_name)
                 models_tab = df_f_tab[mcol].unique().tolist() if not df_f_tab.empty else []
                 if not models_tab: st.info("차트를 보려면 모델을 선택해주세요."); continue
@@ -911,25 +836,25 @@ if uploaded_file:
             if df_d_orig.empty or test_id_col_d is None: st.warning("유효성 검증을 위해 'deviation data' 시트와 '시험번호' 컬럼이 필요합니다.")
             else:
                 with st.expander("Deviation 데이터 확인하기"): st.dataframe(df_d_orig)
-                common_models = sorted(list(set(df_r[m_col_r].unique()) & set(df_d[m_d].unique()))) # m_r -> m_col_r
+                common_models = sorted(list(set(df_r[m_r].unique()) & set(df_d[m_d].unique())))
                 if not common_models: st.info("Reference와 Deviation 데이터에 공통으로 존재하는 모델이 없습니다.")
                 else:
                     models_to_validate = st.multiselect("검증할 모델 선택", common_models, default=common_models[:1])
                     if st.button("📈 통계 검증 실행"):
                         with st.spinner("통계 분석을 진행 중입니다..."):
-                            head_results = perform_validation_analysis(df_r, df_d, m_col_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d, models_to_validate, "양정")
-                            if power_cols_exist: power_results = perform_validation_analysis(df_r, df_d, m_col_r, m_d, q_col_total, q_d, k_col_total, k_d, test_id_col_d, models_to_validate, "축동력")
+                            head_results = perform_validation_analysis(df_r, df_d, m_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d, models_to_validate, "양정")
+                            if power_cols_exist: power_results = perform_validation_analysis(df_r, df_d, m_r, m_d, q_col_total, q_d, k_col_total, k_d, test_id_col_d, models_to_validate, "축동력")
                         st.success("통계 분석 완료!")
                         for model in models_to_validate:
                             st.markdown("---"); st.markdown(f"### 모델: {model}")
                             col1, col2 = st.columns(2)
                             with col1:
                                 st.subheader("📈 양정(Head) 유효성 검증")
-                                display_validation_output(model, head_results, "양정", df_r, df_d, m_col_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d)
+                                display_validation_output(model, head_results, "양정", df_r, df_d, m_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d)
                             with col2:
                                 if power_cols_exist:
                                     st.subheader("⚡ 축동력(Power) 유효성 검증")
-                                    display_validation_output(model, power_results, "축동력", df_r, df_d, m_col_r, m_d, q_col_total, q_d, k_col_total, k_d, test_id_col_d)
+                                    display_validation_output(model, power_results, "축동력", df_r, df_d, m_r, m_d, q_col_total, q_d, k_col_total, k_d, test_id_col_d)
                         st.markdown("---"); st.header("📊 표준성능 곡선 제안 (Reference vs. 실측 평균)")
                         fig_col1, fig_col2 = st.columns(2)
                         with fig_col1:
@@ -940,7 +865,7 @@ if uploaded_file:
                                     summary_df = head_results[model]['summary']
                                     summary_df['평균'] = pd.to_numeric(summary_df['평균'], errors='coerce')
                                     fig_h_proposal.add_trace(go.Scatter(x=summary_df['검증 유량(Q)'], y=summary_df['평균'], mode='lines+markers', name=f'{model} (제안)'))
-                                    model_r_df = df_r[df_r[m_col_r] == model].sort_values(q_col_total) # m_r -> m_col_r
+                                    model_r_df = df_r[df_r[m_r] == model].sort_values(q_col_total)
                                     fig_h_proposal.add_trace(go.Scatter(x=model_r_df[q_col_total], y=model_r_df[h_col_total], mode='lines', name=f'{model} (기존)', line=dict(dash='dot'), opacity=0.7))
                             st.plotly_chart(fig_h_proposal, use_container_width=True)
                         with fig_col2:
@@ -952,7 +877,7 @@ if uploaded_file:
                                         summary_df = power_results[model]['summary']
                                         summary_df['평균'] = pd.to_numeric(summary_df['평균'], errors='coerce')
                                         fig_k_proposal.add_trace(go.Scatter(x=summary_df['검증 유량(Q)'], y=summary_df['평균'], mode='lines+markers', name=f'{model} (제안)'))
-                                        model_r_df = df_r[df_r[m_col_r] == model].sort_values(q_col_total) # m_r -> m_col_r
+                                        model_r_df = df_r[df_r[m_r] == model].sort_values(q_col_total)
                                         fig_k_proposal.add_trace(go.Scatter(x=model_r_df[q_col_total], y=model_r_df[k_col_total], mode='lines', name=f'{model} (기존)', line=dict(dash='dot'), opacity=0.7))
                                 st.plotly_chart(fig_k_proposal, use_container_width=True)
 
@@ -965,7 +890,7 @@ if uploaded_file:
             st.warning("이 기능은 'reference data'가 (첫번째 업로드로) 정상 로드되었을 때만 동작합니다.")
             
             # (1) 기준 데이터(df_r)가 로드되었는지 확인
-            if df_r.empty or m_col_r is None: # m_r -> m_col_r
+            if df_r.empty or m_r is None:
                 st.error("가장 먼저 'reference data'가 포함된 원본 Excel 파일을 업로드해야 합니다.")
             
             # (2) 기준 데이터가 있을 경우, 검토 파일 업로더 표시
@@ -1009,7 +934,7 @@ if uploaded_file:
                             if st.button("🚀 소방 성능 기준 검토 실행"):
                                 with st.spinner(f"{len(task_df)}개 항목을 'reference data'와 비교 검토 중입니다... (최적화 적용됨)"):
                                     results = []
-                                    all_ref_models = df_r[m_col_r].unique()
+                                    all_ref_models = df_r[m_r].unique()
                                     grouped_tasks = task_df.groupby('모델명')
 
                                     for model_name, tasks in grouped_tasks:
@@ -1026,7 +951,7 @@ if uploaded_file:
                                             continue 
 
                                         # 2. 모델이 있는 경우, 모델 데이터프레임을 "한 번" 필터링
-                                        model_df = df_r[df_r[m_col_r] == model_name].sort_values(q_col_total)
+                                        model_df = df_r[df_r[m_r] == model_name].sort_values(q_col_total)
 
                                         if model_df.empty or len(model_df) < 2:
                                             result_detail = {"결과": "❌ 기준 데이터 오류", "상세": "Reference에 모델은 있으나 유효한 성능 곡선 데이터가 없습니다."}
