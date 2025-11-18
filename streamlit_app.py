@@ -638,7 +638,10 @@ if uploaded_file:
         index=default_ref_index
     )
     
-    # [수정] 선택된 시트 이름으로 데이터를 로드합니다. (모델명 컬럼 찾기 X)
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+    # ★ [수정됨] load_sheet 호출 방식 수정 ★
+    # ★ (m_r, df_r_orig = ...) -> (df_r_orig = ...) ★
+    # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     df_r_orig = load_sheet(uploaded_file, ref_sheet_name)
     
     # (카탈로그와 편차 시트는 옵션이므로, 없어도 오류가 나지 않게 수정)
