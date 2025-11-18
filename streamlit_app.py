@@ -851,7 +851,7 @@ if uploaded_file:
                     # --------------------------------------------------------------
                     st.info("👇 아래 버튼을 누르면 AI가 '선정 오류' 및 '보정 필요' 항목에 대해 더 나은 대안 모델을 탐색합니다. (합격 모델은 자동 건너뜀)")
                     
-                        if st.button("🕵️ 대안 모델 추천 실행"):
+                    if st.button("🕵️ 대안 모델 추천 실행"):
                         with st.spinner("최적 모델 탐색 중..."):
                             # DataFrame 복사본 생성 (업데이트 누락 방지)
                             results_df = st.session_state.review_results_df.copy()
