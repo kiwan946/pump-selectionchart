@@ -6,8 +6,8 @@ import numpy as np
 from scipy.stats import t
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.0", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.0 (AI Recommendation)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.1", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.1 (상세 분석 및 추천)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -55,7 +55,7 @@ def process_data(df, q_col, h_col, k_col):
             temp_df[col] = pd.to_numeric(temp_df[col])
     return calculate_efficiency(temp_df, q_col, h_col, k_col)
 
-# [원본] Total 탭의 '단일 운전점 분석'용 (기계)
+# [Total 탭] 단일 운전점 분석 (기계)
 def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
     if target_h <= 0: return pd.DataFrame()
     results = []
@@ -95,19 +95,16 @@ def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col,
     
     return pd.DataFrame(results)
 
-# [원본] Total 탭의 '단일 운전점 분석'용 (소방 - 단순 래퍼)
+# [Total 탭] 단일 운전점 분석 (소방 - 단순 래퍼)
 def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
-    # 이 함수는 Total 탭 디스플레이용으로, 아래 _batch 함수를 활용하여 DF를 리턴하도록 구성
     if target_q <= 0 or target_h <= 0: return pd.DataFrame()
     results = []
     for model in models:
         model_df = df[df[m_col] == model].sort_values(q_col)
         if len(model_df) < 2: continue
         
-        # 배치 함수 호출
         res_dict = _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, STANDARD_MOTORS)
         
-        # 결과를 테이블 형태에 맞게 변환
         row = {
             "모델명": model,
             "정격 예상 양정": res_dict['정격 예상 양정'],
@@ -122,43 +119,25 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
         
     return pd.DataFrame(results)
 
-
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [신규 추가] 표준 모터 계산 헬퍼 함수 ★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# -----------------------------------------------------------------------------------
+# ★ [코어 로직] 표준 모터 및 소방 분석 함수 (v2.1)
+# -----------------------------------------------------------------------------------
 def _calculate_motor(p_rated, p_overload, standard_motors):
-    """
-    [배치 최적화용]
-    - 1-2. 정격(105%)과 1-3. 최대운전(115%)을 동시 만족하는 1-1. 표준모터 선정
-    """
     if pd.isna(p_rated) or pd.isna(p_overload):
         return np.nan
     for motor_kw in standard_motors:
-        # 1-2. 정격에서 105% 이내
-        cond_rated = (p_rated <= motor_kw * 1.05)
-        # 1-3. 최대운전(150%Q)에서 115% 이내
-        cond_overload = (p_overload <= motor_kw * 1.15)
-        
-        if cond_rated and cond_overload:
-            return motor_kw # 1-4. 동시 만족하는 가장 작은 모터 반환
-            
-    return np.nan # 200kW를 넘는 경우
+        # 1-2. 정격에서 105% 이내, 1-3. 최대운전(150%Q)에서 115% 이내
+        if (p_rated <= motor_kw * 1.05) and (p_overload <= motor_kw * 1.15):
+            return motor_kw
+    return np.nan
 
-# [배치 최적화용] 소방 모드 분석 함수
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [최종 수정] _batch_analyze_fire_point 함수 v2.0 ★
-# ★ 1. 정격 3점 검사 우선 (Tolerance 3% 적용)
-# ★ 2. 실패 시 유량 보정 반복 시도 (0~5%)
-# ★ 3. 보정률, 동력 초과율 등 상세 데이터 반환 추가
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, standard_motors):
     """
-    [배치 최적화용]
-    - 3점(정격, 체절, 최대)을 항상 계산하고, 기준 통과 여부를 반환
-    - 보간 오차 고려 Tolerance 3% 적용
-    - 0~5% 유량 보정 시도
+    [소방 성능 분석 코어]
+    - Tolerance 3% 적용하여 3점 검사 (정격, 체절, 최대)
+    - 실패 시 0~5% 유량 보정 반복 시도
+    - 보정률, 동력초과율 등 상세 데이터 반환
     """
-    # 0. 유효성 검사
     if target_q <= 0 or target_h <= 0: 
         return {
             "선정 가능": "❌ 사용 불가", "상세": "유량/양정 0",
@@ -168,44 +147,36 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
             "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0
         }
     
-    # --- 3점 계산 기준값 (고정) ---
     h_churn_limit = 1.40 * target_h
     h_overload_limit = 0.65 * target_h
     h_churn = model_df.iloc[0][h_col]
-    TOLERANCE_FACTOR = 0.97 # 곡선 보간 오차 허용 (97% 이상이면 합격)
+    TOLERANCE_FACTOR = 0.97 # 3% 오차 허용
 
-    # --- 반복 검증 (Iterative Check) ---
-    # 0% 부터 5%까지 0.1% 간격으로 보정률을 생성
+    # 0% ~ 5%까지 0.1% 단위 반복
     correction_steps = np.linspace(0, 0.05, 51) 
     
     for correction_pct in correction_steps:
-        # 보정된 정격 유량 (유량 보정이 필요한 경우 Q를 줄여서 곡선에 맞춤)
+        # 보정된 정격 유량
         q_corrected = target_q * (1 - correction_pct)
         
-        # 1. 정격점(Q) 확인
+        # 3점 데이터 추출 (보간)
         interp_h_rated = np.interp(q_corrected, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
-        
-        # 2. 최대운전점(150% Q) 확인
         q_overload_corr = 1.5 * q_corrected
         interp_h_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
         
-        # 3. 동력 확인
         p_corr = np.interp(q_corrected, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
         p_overload_corr = np.interp(q_overload_corr, model_df[q_col], model_df[k_col], left=np.nan, right=np.nan)
         
-        # --- 검사 조건 (Tolerance 적용) ---
-        # 정격: 목표 양정 이상 (보간 오차 고려 없음, 정격은 엄격) -> 사용자 요청에 따라 Tolerance 적용 가능하나 일단 엄격 유지
-        # 만약 99.56m 이슈가 '정격'에서도 발생한다면 여기도 TOLERANCE 적용 필요. 
-        # 현재 이슈는 '최대운전점'이었으므로 최대운전점에만 적용.
-        cond_rated = (not np.isnan(interp_h_rated)) and (interp_h_rated >= target_h) 
+        # 합격 조건 검사 (Tolerance 적용)
+        cond_rated = (not np.isnan(interp_h_rated)) and (interp_h_rated >= target_h)
         cond_churn = (h_churn <= h_churn_limit)
         cond_overload = (not np.isnan(interp_h_overload_corr)) and (interp_h_overload_corr >= h_overload_limit * TOLERANCE_FACTOR)
         
         if cond_rated and cond_churn and cond_overload:
-            # [성공!] 조건을 만족하는 최소 보정률을 찾음
+            # 합격!
             motor_corr = _calculate_motor(p_corr, p_overload_corr, standard_motors)
             
-            # 동력 초과율 계산 (모터 정격 대비)
+            # 동력 초과율 계산
             p_ratio_100 = (p_corr / motor_corr * 100) if motor_corr and not pd.isna(motor_corr) else 0.0
             p_ratio_150 = (p_overload_corr / motor_corr * 100) if motor_corr and not pd.isna(motor_corr) else 0.0
 
@@ -213,7 +184,7 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                 status_text = "✅"
                 detail_text = "정격 유량 기준"
             else:
-                status_text = f"⚠️ 보정 필요" # 피벗테이블 등 분류용
+                status_text = f"⚠️ 보정 필요"
                 detail_text = f"유량 {correction_pct*100:.1f}% 보정"
             
             return {
@@ -227,27 +198,22 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                 "선정 모터(kW)": motor_corr,
                 "선정 가능": status_text,
                 "상세": detail_text,
-                # [추가 정보 반환]
                 "보정률(%)": correction_pct * 100,
-                "동력초과(100%)": p_ratio_100 if p_ratio_100 > 100 else 0.0,
-                "동력초과(150%)": p_ratio_150 if p_ratio_150 > 100 else 0.0
+                "동력초과(100%)": p_ratio_100,
+                "동력초과(150%)": p_ratio_150
             }
 
-    # 5. 모든 시도(0~5%)가 실패한 경우 -> 0% 기준 데이터로 실패 사유 반환
+    # 모든 보정 시도 실패 시 (0% 기준으로 사유 리턴)
     q_orig = target_q
     interp_h_orig = np.interp(q_orig, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
     q_over_orig = 1.5 * q_orig
     interp_h_over_orig = np.interp(q_over_orig, model_df[q_col], model_df[h_col], left=np.nan, right=np.nan)
     
     fail_reason = ""
-    if np.isnan(interp_h_orig) or interp_h_orig < target_h:
-        fail_reason = "정격 양정 미달"
-    elif h_churn > h_churn_limit:
-        fail_reason = "체절 양정 초과"
-    elif np.isnan(interp_h_over_orig) or interp_h_over_orig < h_overload_limit * TOLERANCE_FACTOR:
-        fail_reason = "최대 운전 양정 미달"
-    else:
-        fail_reason = "3점 기준 미달"
+    if np.isnan(interp_h_orig) or interp_h_orig < target_h: fail_reason = "정격 양정 미달"
+    elif h_churn > h_churn_limit: fail_reason = "체절 양정 초과"
+    elif np.isnan(interp_h_over_orig) or interp_h_over_orig < h_overload_limit * TOLERANCE_FACTOR: fail_reason = "최대 운전 양정 미달"
+    else: fail_reason = "3점 기준 미달"
 
     return {
         "정격 예상 양정": f"{interp_h_orig:.2f}",
@@ -255,29 +221,23 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
         "체절 양정 (기준)": f"≤{h_churn_limit:.2f}",
         "최대운전 양정 (예상)": f"{interp_h_over_orig:.2f}",
         "최대운전 양정 (기준)": f"≥{h_overload_limit:.2f}",
-        "정격 동력(kW)": np.nan,
-        "최대 동력(kW)": np.nan,
-        "선정 모터(kW)": np.nan,
+        "정격 동력(kW)": np.nan, "최대 동력(kW)": np.nan, "선정 모터(kW)": np.nan,
         "선정 가능": "❌ 사용 불가",
         "상세": fail_reason,
         "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0
     }
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★ [신규 추가] 대안 모델 추천 함수 ★
-# ★ - 전체 모델을 스캔하여 최소 보정률로 만족하는 모델 찾기
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# [추천 시스템] 대안 모델 탐색
 def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assigned_model):
     all_models = df_r[m_r].unique()
     candidates = []
 
     for model in all_models:
-        if model == assigned_model: continue # 원래 모델 제외
+        if model == assigned_model: continue
         
         model_df = df_r[df_r[m_r] == model].sort_values(q_col)
         if model_df.empty: continue
         
-        # 분석 실행
         res = _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, STANDARD_MOTORS)
         
         if "❌" not in res['선정 가능']:
@@ -287,10 +247,9 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
                 "모터": res['선정 모터(kW)']
             })
     
-    if not candidates:
-        return None
+    if not candidates: return None
     
-    # 정렬: 1순위 보정률(낮은순), 2순위 모터(작은순)
+    # 1순위: 보정률 낮은 순, 2순위: 모터 작은 순
     candidates.sort(key=lambda x: (x['보정률'], x['모터']))
     
     best = candidates[0]
@@ -888,13 +847,13 @@ if uploaded_file:
                                                 "최대 동력(kW)": op_result_dict['최대 동력(kW)'],
                                             }
                                             
-                                            # [Feature 3] 선정 불가 시 대안 모델 추천 (전수 조사)
-                                            if "❌" in result_detail["결과"]:
-                                                rec_model_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model_name)
-                                                if rec_model_str:
-                                                     result_detail["결과"] += f"\n(💡 추천: {rec_model_str})"
-                                                else:
-                                                     result_detail["결과"] += "\n(대안 없음)"
+                                            # [Feature 3 개선] 모든 항목에 대해 대안 모델 추천 (전수 조사)
+                                            rec_model_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model_name)
+                                            # 추천 모델이 있고, 현재 모델과 다른 경우만 결과에 추가 (중복 추천 방지)
+                                            if rec_model_str and rec_model_str.split(' ')[0] != model_name:
+                                                 result_detail["추천모델"] = rec_model_str
+                                            else:
+                                                 result_detail["추천모델"] = "대안 없음" if "❌" in result_detail["결과"] else ""
 
                                             base_info = base_info_template.copy()
                                             base_info.update({"요구 유량(Q)": q, "요구 양정(H)": h})
@@ -925,7 +884,11 @@ if uploaded_file:
                     if failed_df.empty:
                         st.info("선정 오류로 판단된 항목이 없습니다.")
                     else:
-                        st.dataframe(failed_df.set_index("선정 모델"), use_container_width=True)
+                        # 오류 목록에도 추천 모델 표시
+                        failed_display = failed_df.copy()
+                        if '추천모델' in failed_display.columns:
+                            failed_display['비고'] = failed_display.apply(lambda x: f"💡 추천: {x['추천모델']}" if x['추천모델'] else "", axis=1)
+                        st.dataframe(failed_display.set_index("선정 모델"), use_container_width=True)
                     
                     st.markdown("#### ⚠️ 보정 필요 목록")
                     if warning_df.empty:
@@ -935,7 +898,8 @@ if uploaded_file:
                         
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     # ★ [최종 수정] 전체 검토 결과 피벗 테이블 (상세 정보 포함) ★
-                    # ★ Feature 1 & 2 반영: 유량보정률, 동력초과율 표시
+                    # ★ Feature 1 & 2 반영: 유량보정률, 동력초과율 표시 (줄바꿈 & 100/150 구분)
+                    # ★ Feature 3 반영: 전체 모델에 대한 추천 표시
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
                     
@@ -952,23 +916,30 @@ if uploaded_file:
                                 if kw == int(kw): return f"({int(kw)}kW)"
                                 return f"({kw}kW)"
                             
-                            # 2. 셀에 표시할 텍스트 생성 (Feature 1, 2 반영)
+                            # 2. 셀에 표시할 텍스트 생성 (Feature 1, 2, 3 반영)
                             def create_display_text(row):
                                 base_text = f"{row['선정 모델']} {format_motor(row['선정 모터(kW)'])}"
                                 extras = []
                                 
-                                # 유량 보정 정보
-                                if row.get('보정률(%)', 0) > 0:
-                                    extras.append(f"💧 유량보정: {row['보정률(%)']:.1f}%")
+                                # 유량 보정 정보 (100% / 150% 구분 표시)
+                                corr = row.get('보정률(%)', 0)
+                                if corr > 0:
+                                    extras.append(f"💧 유량보정(100%): {corr:.1f}% 💧 유량보정(150%): {corr:.1f}%")
                                 
-                                # 동력 초과 정보 (100% 지점)
-                                if row.get('동력초과(100%)', 0) > 100:
-                                    extras.append(f"⚡ 동력초과(100%): {row['동력초과(100%)']:.0f}%")
+                                # 동력 초과 정보 (100% / 150% 구분 표시)
+                                p100 = row.get('동력초과(100%)', 0)
+                                p150 = row.get('동력초과(150%)', 0)
                                 
-                                # 동력 초과 정보 (150% 지점)
-                                if row.get('동력초과(150%)', 0) > 100:
-                                    extras.append(f"⚡ 동력초과(150%): {row['동력초과(150%)']:.0f}%")
+                                if p100 > 100 or p150 > 100:
+                                    p100_str = f"{p100:.0f}%" if p100 > 100 else "-"
+                                    p150_str = f"{p150:.0f}%" if p150 > 100 else "-"
+                                    extras.append(f"⚡ 동력초과(100%): {p100_str} ⚡ 동력초과(150%): {p150_str}")
                                 
+                                # 대안 모델 추천 정보 (전체 모델 대상)
+                                rec = row.get('추천모델', '')
+                                if rec and rec != "대안 없음":
+                                     extras.append(f"💡 추천: {rec}")
+
                                 if extras:
                                     return base_text + "\n" + "\n".join(extras)
                                 return base_text
