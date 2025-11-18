@@ -32,6 +32,9 @@ def calculate_efficiency(df, q_col, h_col, k_col):
     return df_copy
 
 def load_sheet(uploaded_file, sheet_name):
+    # [수정] 시트 이름이 없으면(None) 함수를 즉시 종료
+    if not sheet_name:
+        return None, pd.DataFrame()
     try:
         df = pd.read_excel(uploaded_file, sheet_name=sheet_name)
         df.columns = df.columns.str.strip()
@@ -42,7 +45,7 @@ def load_sheet(uploaded_file, sheet_name):
         df['Series'] = pd.Categorical(df['Series'], categories=SERIES_ORDER, ordered=True)
         df = df.sort_values('Series')
         return mcol, df
-    except Exception:
+    except Exception: # 시트가 존재하지 않는 등
         return None, pd.DataFrame()
 
 def process_data(df, q_col, h_col, k_col):
@@ -169,6 +172,7 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
             q_required = np.interp(target_h, h_values_rev, q_values_rev)
             
             # Case 1a: 5% 초과 보정 (즉시 실패)
+            # (5% 이내 허용이므로 0.95*Q ~ 1.05*Q 까지 허용)
             if q_required < (0.95 * target_q) or q_required > (1.05 * target_q):
                 correction_pct = (1 - (q_required / target_q)) * 100
                 base_result["상세"] = f"5% 초과 유량 보정 필요 ({correction_pct:.1f}%)"
@@ -200,6 +204,13 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                     })
                     results.append(base_result)
                     continue # [성공 - 보정]
+                else:
+                    # [실패] 보정은 했으나 3점 미달
+                    base_result["상세"] = "보정 후 3점 기준 미달"
+                    if not cond1_ok: base_result["상세"] += " (체절 초과)"
+                    if not cond2_ok: base_result["상세"] += " (최대 미달)"
+                    results.append(base_result)
+                    continue # [실패]
         
         # 2. 정격점(Q) 기준 3점 검사 (1단계에서 성공/보정 판정을 받지 못한 경우)
         if not np.isnan(interp_h_rated) and interp_h_rated >= target_h:
@@ -602,12 +613,44 @@ def display_validation_output(model, validation_data, analysis_type, df_r, df_d,
             st.markdown("---")
 
 # --- 메인 애플리케이션 로직 ---
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★ [수정됨] 1. 기준 데이터 시트 선택 기능 추가 ★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (reference data 시트 포함)", type=["xlsx", "xlsm"])
 if uploaded_file:
-    m_r, df_r_orig = load_sheet(uploaded_file, "reference data"); m_c, df_c_orig = load_sheet(uploaded_file, "catalog data"); m_d, df_d_orig = load_sheet(uploaded_file, "deviation data")
-    if df_r_orig.empty: st.error("오류: 'reference data' 시트를 찾을 수 없거나 '모델명' 관련 컬럼이 없습니다. 파일을 확인해주세요.")
+    # [수정] 엑셀 파일의 모든 시트 이름을 먼저 불러옵니다.
+    try:
+        xls = pd.ExcelFile(uploaded_file)
+        all_sheet_names = xls.sheet_names
+    except Exception as e:
+        st.error(f"엑셀 파일 로드 중 오류: {e}")
+        st.stop() # 여기서 중단
+
+    # [수정] 사이드바에 시트 선택 메뉴 추가
+    st.sidebar.title("⚙️ 분석 설정")
+    
+    # 'reference data'가 있으면 기본값으로, 없으면 첫 번째 시트를 기본값으로
+    default_ref_index = 0
+    if "reference data" in all_sheet_names:
+        default_ref_index = all_sheet_names.index("reference data")
+    
+    ref_sheet_name = st.sidebar.selectbox(
+        "1. 기준 데이터 시트 선택", 
+        all_sheet_names, 
+        index=default_ref_index
+    )
+    
+    # [수정] 선택된 시트 이름으로 데이터를 로드합니다.
+    m_r, df_r_orig = load_sheet(uploaded_file, ref_sheet_name)
+    # (카탈로그와 편차 시트는 옵션이므로, 없어도 오류가 나지 않게 수정)
+    m_c, df_c_orig = load_sheet(uploaded_file, "catalog data")
+    m_d, df_d_orig = load_sheet(uploaded_file, "deviation data")
+
+    if df_r_orig.empty: 
+        st.error(f"'{ref_sheet_name}' 시트를 찾을 수 없거나 '모델명' 관련 컬럼이 없습니다. 파일을 확인해주세요.")
     else:
-        st.sidebar.title("⚙️ 분석 설정"); st.sidebar.markdown("### Total 탭 & 운전점 분석 컬럼 지정")
+        # [수정] 사이드바 타이틀은 이미 위에서 선언했으므로 markdown으로 변경
+        st.sidebar.markdown("### 2. Total 탭 & 운전점 분석 컬럼 지정")
         all_columns_r = df_r_orig.columns.tolist()
         def safe_get_index(items, value, default=0):
             try: return items.index(value)
