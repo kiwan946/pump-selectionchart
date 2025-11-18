@@ -99,6 +99,7 @@ def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col,
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★ [수정됨] analyze_fire_pump_point 함수 ★
 # ★ (로직 수정: 정격 3점 검사 실패 시(양정,체절,최대) 항상 유량보정 시도) ★
+# ★ (로직 수정: 보정 시도 후 3점 검사 실패 시 '선정 오류'로 분류) ★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
     if target_q <= 0 or target_h <= 0: return pd.DataFrame()
@@ -163,6 +164,7 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                     cond2_ok_corr = (not np.isnan(interp_h_overload_corr)) and (interp_h_overload_corr >= h_overload_limit)
 
                     if cond1_ok_corr and cond2_ok_corr:
+                        # [성공 - 보정]
                         correction_pct = (1 - (q_required / target_q)) * 100
                         status_text = f"유량 {correction_pct:.1f}% 보정 전제 사용 가능"
                         interp_kw_corr = np.interp(q_required, model_df[q_col], model_df[k_col]) if k_col and k_col in model_df.columns else np.nan
@@ -174,10 +176,16 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
                             "선정 가능": status_text
                         })
                         results.append(base_result)
-                        continue # [성공 - 보정]
+                        continue # [ ⚠️ 로 분류됨]
+                    
+                    # ★★★ [신규 수정] ★★★
+                    else:
+                        # 5% 이내 보정을 시도했으나 3점 검사 실패 -> 최종 실패로 넘김
+                        pass
+                    # ★★★ [신규 수정 끝] ★★★
     
-    # 3. [최종 실패] (1, 2b 모두 통과 못함)
-    results.append(base_result)
+    # 3. [최종 실패] (1, 2b(성공) 외 모든 경우)
+    results.append(base_result) # <--- "❌ 사용 불가"
             
     return pd.DataFrame(results)
 
@@ -258,6 +266,7 @@ def _calculate_motor(p_rated, p_overload, standard_motors):
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 # ★ [수정됨] _batch_analyze_fire_point 함수 ★
 # ★ (로직 수정: 정격 3점 검사 실패 시(양정,체절,최대) 항상 유량보정 시도) ★
+# ★ (로직 수정: 보정 시도 후 3점 검사 실패 시 '선정 오류'로 분류) ★
 # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
 def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, standard_motors):
     """
@@ -360,6 +369,7 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                     })
                     return base_result # ⚠️ (Warning - Pass)
                 
+                # ★★★ [신규 수정] ★★★
                 else:
                     # [실패] 3점 검사에 실패한 '보정' 케이스
                     fail_reason = ""
@@ -370,17 +380,21 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
                     else:
                         fail_reason = "3점 기준 미달 (복합)"
 
-                    status_text = f"⚠️ 유량 {correction_pct:.1f}% 보정 (But: {fail_reason})"
+                    # [중요] 5% 이내 보정을 시도했으나, 3점 검사(보정 기준)를 실패 -> ❌로 반환
+                    status_text = f"❌ 사용 불가"
+                    details = f"유량 {correction_pct:.1f}% 보정 시도했으나 {fail_reason}"
+                    
                     base_result.update({
                         "정격 예상 양정": f"{target_h:.2f} (at Q={q_required:.2f})", 
                         "최대운전 양정 (예상)": f"{interp_h_overload_corr:.2f}",
                         "정격 동력(kW)": p_corr,
                         "최대 동력(kW)": p_overload_corr,
                         "선정 모터(kW)": motor_corr,
-                        "선정 가능": status_text, # <--- 'warning_df'로 분류됨
-                        "상세": fail_reason 
+                        "선정 가능": status_text, # <--- ❌
+                        "상세": details
                     })
-                    return base_result # ⚠️ (Warning - Fail)
+                    return base_result # <--- ❌ (Error)
+                # ★★★ [신규 수정 끝] ★★★
         
         # 3. [최종 실패] (1번 실패 AND 2-1 보정 불가)
         # (즉, 1차 3점 검사 실패 + 유량 보정조차 불가능한 경우)
