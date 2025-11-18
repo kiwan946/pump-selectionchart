@@ -7,8 +7,8 @@ from scipy.stats import t
 import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.10", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.10 (선정표 범위 인식 개선)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.11", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.11 (좌표 범위 고정)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -279,21 +279,36 @@ def render_filters(df, mcol, prefix):
 
 def parse_selection_table(df_selection_table):
     """
-    [수정됨 v2.10] XRF 모델 선정표 파싱
-    - H(양정) 파싱 시, 숫자가 아닌 값이 나오면 즉시 중단(break)하여 
-      선정표 범위를 벗어난 불필요한 '미선정' 영역 생성을 방지함.
+    [수정됨 v2.11] 선정표 파싱 범위 사용자 지정 (하드코딩)
+    - 유량(Q): E열(index 4) ~ DX열(index 127) | 행 index 10
+    - 양정(H): 16행(index 15) ~ 129행(index 128) | B열(index 1)
+    - 이렇게 범위를 고정하여 불필요한 '미선정' 데이터 생성을 막습니다.
     """
     try:
-        q_col_indices = list(range(4, df_selection_table.shape[1], 3))
-        # h_row_indices 제거 (직접 순회하며 break 처리)
+        # 0-based index 설정
+        # Q: E=4 ~ DX=127. Step=3.
+        # DX col index calculation: (4 * 26) + 24 - 1 = 127.
+        Q_COL_START = 4
+        Q_COL_END = 127 # inclusive
+        Q_ROW_IDX = 10  # 11행
+
+        # H: 16행(idx 15) ~ 129행(idx 128). Step=3.
+        H_ROW_START = 15
+        H_ROW_END = 128 # inclusive
+        H_COL_IDX = 1   # B열
         
         tasks = []
         q_values = {}
         h_values = {}
 
-        # 1. 유량(Q) 값 파싱
-        for c_idx in q_col_indices:
-            q_val_raw = str(df_selection_table.iloc[10, c_idx])
+        # 1. 유량(Q) 값 파싱 (E~DX)
+        # range의 end는 exclusive하므로 +1 해줌
+        for c_idx in range(Q_COL_START, Q_COL_END + 1, 3):
+            # 안전장치: 업로드된 파일이 지정된 범위보다 작을 경우 에러 방지
+            if c_idx >= df_selection_table.shape[1]:
+                break
+
+            q_val_raw = str(df_selection_table.iloc[Q_ROW_IDX, c_idx])
             if pd.isna(q_val_raw) or q_val_raw == "": continue
             try:
                 q_val_clean = q_val_raw.split('(')[0].strip()
@@ -301,26 +316,27 @@ def parse_selection_table(df_selection_table):
             except (ValueError, TypeError):
                 continue 
         
-        # 2. 양정(H) 값 파싱 (핵심 수정: 비정상 값 만나면 Stop)
-        for r_idx in range(15, df_selection_table.shape[0], 3):
-            h_val_raw = str(df_selection_table.iloc[r_idx, 1])
-            
-            # 빈 칸이면 종료 (표의 끝으로 간주)
-            if pd.isna(h_val_raw) or h_val_raw.strip() == "":
+        # 2. 양정(H) 값 파싱 (16행~129행)
+        for r_idx in range(H_ROW_START, H_ROW_END + 1, 3):
+             # 안전장치
+            if r_idx >= df_selection_table.shape[0]:
                 break
-            
+
+            h_val_raw = str(df_selection_table.iloc[r_idx, H_COL_IDX])
+            if pd.isna(h_val_raw) or h_val_raw == "": continue
             try:
-                # "30(m)" 형태 처리
                 h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
-                val = float(h_val_clean)
-                h_values[r_idx] = val
+                h_values[r_idx] = float(h_val_clean)
             except (ValueError, TypeError):
-                # 숫자로 변환 불가능한 텍스트(주석 등)를 만나면 종료
-                break
+                continue 
         
         # 3. 교차 지점 파싱 (유효한 Q, H 범위 내에서만 수행)
         for r_idx in h_values:
             for c_idx in q_values:
+                # 안전장치
+                if r_idx >= df_selection_table.shape[0] or c_idx >= df_selection_table.shape[1]:
+                    continue
+
                 raw_cell = df_selection_table.iloc[r_idx, c_idx]
                 model_name = str(raw_cell).strip()
                 
