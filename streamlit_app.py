@@ -6,8 +6,8 @@ import numpy as np
 from scipy.stats import t
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.2", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.2 (속도 최적화)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.3", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.3 (최신 라이브러리 대응)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -222,7 +222,6 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         model_df = df_r[df_r[m_r] == model].sort_values(q_col)
         if model_df.empty: continue
         
-        # 속도 최적화를 위해 간단한 범위 체크 후 분석
         if not (model_df[q_col].max() * 1.1 >= target_q and model_df[h_col].max() >= target_h):
             continue
 
@@ -842,7 +841,7 @@ if uploaded_file:
                                     
                                 st.session_state.review_results_df = pd.DataFrame(results)
                                 st.success("1차 검토 완료! 상세 분석을 원하시면 아래 버튼을 누르세요.")
-                                st.experimental_rerun()
+                                st.rerun()
 
                 # (5) 결과 표시 및 심화 분석
                 if 'review_results_df' in st.session_state:
@@ -878,7 +877,7 @@ if uploaded_file:
                                 progress_bar.progress((idx + 1) / total_items)
                             
                             st.success("전체 항목 분석 및 추천 완료!")
-                            st.experimental_rerun()
+                            st.rerun()
 
 
                     st.markdown("### 📊 검토 결과 요약")
