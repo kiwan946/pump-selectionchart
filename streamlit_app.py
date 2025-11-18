@@ -7,8 +7,8 @@ from scipy.stats import t
 import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.5", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.5 (조건부 탐색 최적화)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.6", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.6 (공란 분석 포함)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -217,6 +217,7 @@ def _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col,
 def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assigned_model):
     
     # 1. 현재 할당된 모델의 시리즈 식별 (예: "XRF215-...")
+    # 할당된 모델이 '미선정'이거나 인식이 안 되면 전체 검색
     match = re.search(r"(XRF\d+)", str(assigned_model))
     target_series_subset = []
     
@@ -224,7 +225,7 @@ def find_recommendation(df_r, m_r, q_col, h_col, k_col, target_q, target_h, assi
         current_series = match.group(1)
         if current_series in SERIES_ORDER:
             curr_idx = SERIES_ORDER.index(current_series)
-            # [최적화 핵심] 현재 시리즈의 2단계 아래부터 끝까지만 탐색
+            # [최적화] 현재 시리즈의 2단계 아래부터 끝까지만 탐색
             start_idx = max(0, curr_idx - 2)
             target_series_subset = SERIES_ORDER[start_idx:]
     
@@ -281,6 +282,66 @@ def render_filters(df, mcol, prefix):
         df_f = df[df[mcol].isin(sel)] if sel else pd.DataFrame()
     return df_f
 
+def parse_selection_table(df_selection_table):
+    """
+    [수정됨] 사용자가 업로드한 'XRF 모델 선정표' 파싱
+    - 공란(빈칸)이더라도 Q와 H가 유효하면 '미선정' 상태로 추가하여 분석 대상에 포함시킴
+    """
+    try:
+        q_col_indices = list(range(4, df_selection_table.shape[1], 3))
+        h_row_indices = list(range(15, df_selection_table.shape[0], 3))
+        
+        tasks = []
+        q_values = {}
+        h_values = {}
+
+        # 1. 유량(Q) 값 파싱
+        for c_idx in q_col_indices:
+            q_val_raw = str(df_selection_table.iloc[10, c_idx])
+            if pd.isna(q_val_raw) or q_val_raw == "": continue
+            try:
+                q_val_clean = q_val_raw.split('(')[0].strip()
+                q_values[c_idx] = float(q_val_clean)
+            except (ValueError, TypeError):
+                continue 
+        
+        # 2. 양정(H) 값 파싱
+        for r_idx in h_row_indices:
+            h_val_raw = str(df_selection_table.iloc[r_idx, 1])
+            if pd.isna(h_val_raw) or h_val_raw == "": continue
+            try:
+                h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
+                h_values[r_idx] = float(h_val_clean)
+            except (ValueError, TypeError):
+                continue 
+        
+        # 3. 교차 지점의 모델명 파싱 (빈칸 포함)
+        for r_idx in h_values:
+            for c_idx in q_values:
+                raw_cell = df_selection_table.iloc[r_idx, c_idx]
+                model_name = str(raw_cell).strip()
+                
+                # 'nan' 문자열이나 빈 문자열 처리 -> "미선정"으로 할당
+                if pd.isna(raw_cell) or model_name.lower() == 'nan' or model_name == "":
+                    model_name = "미선정"
+                
+                # 모델명이 있거나, '미선정' 인 경우 모두 추가
+                # (단, 엑셀의 다른 텍스트가 섞일 수 있으므로 XRF나 미선정인 경우만)
+                if "XRF" in model_name or model_name == "미선정":
+                    tasks.append({
+                        "모델명": model_name,
+                        "요구 유량 (Q)": q_values[c_idx],
+                        "요구 양정 (H)": h_values[r_idx],
+                        "_source_cell": f"[Row {r_idx + 1}, Col {chr(65 + c_idx)}]"
+                    })
+        
+        return pd.DataFrame(tasks)
+    
+    except Exception as e:
+        st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
+        return pd.DataFrame()
+
+# ... (이하 add_traces, add_bep_markers, add_guide_lines, render_chart, display_validation_output 함수는 기존과 동일) ...
 def add_traces(fig, df, mcol, xcol, ycol, models, mode, line_style=None, name_suffix=""):
     for m in models:
         sub = df[df[mcol] == m].sort_values(xcol)
@@ -354,119 +415,6 @@ def perform_validation_analysis(df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col
         
         all_results[model] = { 'summary': pd.DataFrame(model_summary), 'samples': interpolated_y_samples }
     return all_results
-
-def parse_selection_table(df_selection_table):
-    """
-    사용자가 업로드한 'XRF 모델 선정표...' (CSV 또는 Excel) 파일의 특정 구조를 파싱합니다.
-    - Q (유량)은 11행 (인덱스 10)에서 E, H, K... 열(3칸 간격)에서 가져옵니다.
-    - H (양정)은 B열 (인덱스 1)에서 16, 19, 22... 행(3줄 간격)에서 가져옵니다.
-    - Model은 위 Q, H가 교차하는 지점에서 가져옵니다.
-    """
-    try:
-        # 유량(Q) 헤더가 있는 열 인덱스: 4(E), 7(H), 10(K), ...
-        q_col_indices = list(range(4, df_selection_table.shape[1], 3))
-        # 양정(H) 헤더가 있는 행 인덱스: 15(16행), 18(19행), 21(22행), ...
-        h_row_indices = list(range(15, df_selection_table.shape[0], 3))
-        
-        tasks = []
-        q_values = {}
-        h_values = {}
-
-        # 1. 유량(Q) 값 파싱 (11행, 인덱스 10)
-        for c_idx in q_col_indices:
-            q_val_raw = str(df_selection_table.iloc[10, c_idx])
-            if pd.isna(q_val_raw) or q_val_raw == "": continue
-            try:
-                q_val_clean = q_val_raw.split('(')[0].strip()
-                q_values[c_idx] = float(q_val_clean)
-            except (ValueError, TypeError):
-                continue 
-        
-        # 2. 양정(H) 값 파싱 (B열, 인덱스 1)
-        for r_idx in h_row_indices:
-            h_val_raw = str(df_selection_table.iloc[r_idx, 1])
-            if pd.isna(h_val_raw) or h_val_raw == "": continue
-            try:
-                h_val_clean = h_val_raw.split('\n')[0].split('(')[0].strip()
-                h_values[r_idx] = float(h_val_clean)
-            except (ValueError, TypeError):
-                continue 
-        
-        # 3. 교차 지점의 모델명 파싱
-        for r_idx in h_values:
-            for c_idx in q_values:
-                model_name = str(df_selection_table.iloc[r_idx, c_idx]).strip()
-                if model_name and model_name.lower() != 'nan' and 'XRF' in model_name:
-                    tasks.append({
-                        "모델명": model_name,
-                        "요구 유량 (Q)": q_values[c_idx],
-                        "요구 양정 (H)": h_values[r_idx],
-                        "_source_cell": f"[Row {r_idx + 1}, Col {chr(65 + c_idx)}]"
-                    })
-        
-        return pd.DataFrame(tasks)
-    
-    except Exception as e:
-        st.error(f"선정표 파싱 중 심각한 오류 발생: {e}. (엑셀 행/열 구조가 예상과 다를 수 있습니다.)")
-        return pd.DataFrame()
-
-def display_validation_output(model, validation_data, analysis_type, df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col):
-    if model not in validation_data or validation_data[model]['summary'].empty:
-        st.warning(f"'{model}' 모델에 대한 {analysis_type} 분석 결과가 없습니다.")
-        return
-
-    model_data = validation_data[model]
-    model_summary_df = model_data['summary']
-    model_samples = model_data['samples']
-    base_col_name = f"기준 {analysis_type}"
-    
-    st.markdown(f"#### 분석 결과 요약 ({analysis_type})")
-    display_summary = model_summary_df.drop(columns=['_original_q']).set_index('모델명')
-    st.dataframe(display_summary, use_container_width=True)
-    
-    st.markdown(f"#### 모델별 상세 결과 시각화 ({analysis_type})")
-    fig_main = go.Figure()
-    numeric_cols = ["검증 유량(Q)", base_col_name, "95% CI 하한", "95% CI 상한"]
-    for col in numeric_cols: model_summary_df[col] = pd.to_numeric(model_summary_df[col], errors='coerce')
-    
-    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 상한'], fill=None, mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 상한'))
-    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 하한'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 하한'))
-    
-    model_d_df_vis = df_d[(df_d[m_d] == model) & (df_d[y_d_col].notna())]; test_ids_vis = model_d_df_vis[test_id_col].unique()
-    for test_id in test_ids_vis:
-        test_df_vis = model_d_df_vis[model_d_df_vis[test_id_col] == test_id].sort_values(by=q_d)
-        fig_main.add_trace(go.Scatter(x=test_df_vis[q_d], y=test_df_vis[y_d_col], mode='lines', line=dict(width=1, color='grey'), name=f'시험 {test_id}', opacity=0.5, showlegend=False))
-    
-    model_r_df_vis = df_r[(df_r[m_r] == model) & (df_r[y_r_col].notna())].sort_values(by=q_r)
-    fig_main.add_trace(go.Scatter(x=model_r_df_vis[q_r], y=model_r_df_vis[y_r_col], mode='lines+markers', line=dict(color='blue', width=3), name='Reference Curve'))
-    
-    if analysis_type == '양정':
-        upper_limit = model_summary_df[base_col_name] * 1.05
-        lower_limit = model_summary_df[base_col_name] * 0.95
-        fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=upper_limit, mode='lines', name='양정 상한 (+5%)', line=dict(color='orange', dash='dash')))
-        fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=lower_limit, mode='lines', name='양정 하한 (-5%)', line=dict(color='orange', dash='dash')))
-
-    valid_points = model_summary_df[model_summary_df['유효성'] == '✅ 유효']; invalid_points = model_summary_df[model_summary_df['유효성'] == '❌ 벗어남']
-    fig_main.add_trace(go.Scatter(x=valid_points['검증 유량(Q)'], y=valid_points[base_col_name], mode='markers', marker=dict(color='green', size=10, symbol='circle'), name='유효 포인트'))
-    fig_main.add_trace(go.Scatter(x=invalid_points['검증 유량(Q)'], y=invalid_points[base_col_name], mode='markers', marker=dict(color='red', size=10, symbol='x'), name='벗어남 포인트'))
-    
-    fig_main.update_layout(yaxis_title=analysis_type)
-    st.plotly_chart(fig_main, use_container_width=True)
-
-    with st.expander(f"검증 유량 지점별 {analysis_type} 데이터 분포표 보기"):
-        for idx, row in model_summary_df.iterrows():
-            q_point_original = row['_original_q']
-            samples = model_samples.get(q_point_original, [])
-            if not samples or row['시험 횟수(n)'] < 2: continue
-            q_point_str, ref_y_point, mean_y, std_y, n_samples = row['검증 유량(Q)'], float(row[base_col_name]), float(row['평균']), float(row['표준편차']), int(row['시험 횟수(n)'])
-            st.markdown(f"**Q = {q_point_str}**")
-            st.markdown(f"<small>평균: {mean_y:.2f} | 표준편차: {std_y:.2f} | n: {n_samples}</small>", unsafe_allow_html=True)
-            fig_dist = ff.create_distplot([samples], ['시험 데이터'], show_hist=False, show_rug=True)
-            fig_dist.add_vline(x=ref_y_point, line_width=2, line_dash="dash", line_color="red")
-            fig_dist.add_vline(x=mean_y, line_width=2, line_dash="dot", line_color="blue")
-            fig_dist.update_layout(title_text=None, xaxis_title=analysis_type, yaxis_title="밀도", height=300, margin=dict(l=20,r=20,t=5,b=20), showlegend=False)
-            st.plotly_chart(fig_dist, use_container_width=True, config={'displayModeBar': False})
-            st.markdown("---")
 
 # --- 메인 애플리케이션 로직 ---
 uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (reference data 시트 포함)", type=["xlsx", "xlsm"])
@@ -807,21 +755,17 @@ if uploaded_file:
                                     for model_name, tasks in grouped_tasks:
                                         base_info_template = {"선정 모델": model_name}
                                         
-                                        # 1. 기준 데이터에 모델이 없는 경우
-                                        if model_name not in all_ref_models:
-                                            result_detail = {"결과": "❌ 모델 없음", "상세": "Reference 데이터에 해당 모델명이 없습니다."}
-                                            for _, task_row in tasks.iterrows():
-                                                base_info = base_info_template.copy()
-                                                base_info.update({"요구 유량(Q)": task_row['요구 유량 (Q)'], "요구 양정(H)": task_row['요구 양정 (H)']})
-                                                base_info.update(result_detail)
-                                                results.append(base_info)
-                                            continue 
-
-                                        # 2. 모델이 있는 경우, 모델 데이터프레임을 "한 번" 필터링
-                                        model_df = df_r[df_r[m_r] == model_name].sort_values(q_col_total)
-
-                                        if model_df.empty or len(model_df) < 2:
-                                            result_detail = {"결과": "❌ 기준 데이터 오류", "상세": "Reference에 모델은 있으나 유효한 성능 곡선 데이터가 없습니다."}
+                                        # 1. 미선정 (공란) 처리
+                                        if model_name == "미선정":
+                                            result_detail = {
+                                                "결과": "❌ 선정 불가", 
+                                                "상세": "선정표에 모델이 기입되지 않음",
+                                                "정격 예상 양정": "N/A", "체절 양정 (예상)": "N/A", "체절 양정 (기준)": "N/A",
+                                                "최대운전 양정 (예상)": "N/A", "최대운전 양정 (기준)": "N/A", 
+                                                "정격 동력(kW)": np.nan, "최대 동력(kW)": np.nan, "선정 모터(kW)": np.nan,
+                                                "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0,
+                                                "추천모델": ""
+                                            }
                                             for _, task_row in tasks.iterrows():
                                                 base_info = base_info_template.copy()
                                                 base_info.update({"요구 유량(Q)": task_row['요구 유량 (Q)'], "요구 양정(H)": task_row['요구 양정 (H)']})
@@ -829,7 +773,45 @@ if uploaded_file:
                                                 results.append(base_info)
                                             continue
 
-                                        # 3. 이 모델에 대한 모든 (Q, H) 작업을 "배치 전용 함수"로 빠르게 처리
+                                        # 2. 기준 데이터에 모델이 없는 경우
+                                        if model_name not in all_ref_models:
+                                            result_detail = {
+                                                "결과": "❌ 모델 없음", 
+                                                "상세": "Reference 데이터에 해당 모델명이 없습니다.",
+                                                "정격 예상 양정": "N/A", "체절 양정 (예상)": "N/A", "체절 양정 (기준)": "N/A",
+                                                "최대운전 양정 (예상)": "N/A", "최대운전 양정 (기준)": "N/A", 
+                                                "정격 동력(kW)": np.nan, "최대 동력(kW)": np.nan, "선정 모터(kW)": np.nan,
+                                                "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0,
+                                                "추천모델": ""
+                                            }
+                                            for _, task_row in tasks.iterrows():
+                                                base_info = base_info_template.copy()
+                                                base_info.update({"요구 유량(Q)": task_row['요구 유량 (Q)'], "요구 양정(H)": task_row['요구 양정 (H)']})
+                                                base_info.update(result_detail)
+                                                results.append(base_info)
+                                            continue 
+
+                                        # 3. 모델이 있는 경우, 모델 데이터프레임을 "한 번" 필터링
+                                        model_df = df_r[df_r[m_r] == model_name].sort_values(q_col_total)
+
+                                        if model_df.empty or len(model_df) < 2:
+                                            result_detail = {
+                                                "결과": "❌ 기준 데이터 오류", 
+                                                "상세": "Reference에 모델은 있으나 유효한 성능 곡선 데이터가 없습니다.",
+                                                "정격 예상 양정": "N/A", "체절 양정 (예상)": "N/A", "체절 양정 (기준)": "N/A",
+                                                "최대운전 양정 (예상)": "N/A", "최대운전 양정 (기준)": "N/A", 
+                                                "정격 동력(kW)": np.nan, "최대 동력(kW)": np.nan, "선정 모터(kW)": np.nan,
+                                                "보정률(%)": 0.0, "동력초과(100%)": 0.0, "동력초과(150%)": 0.0,
+                                                "추천모델": ""
+                                            }
+                                            for _, task_row in tasks.iterrows():
+                                                base_info = base_info_template.copy()
+                                                base_info.update({"요구 유량(Q)": task_row['요구 유량 (Q)'], "요구 양정(H)": task_row['요구 양정 (H)']})
+                                                base_info.update(result_detail)
+                                                results.append(base_info)
+                                            continue
+
+                                        # 4. 이 모델에 대한 모든 (Q, H) 작업을 "배치 전용 함수"로 빠르게 처리
                                         for _, task_row in tasks.iterrows():
                                             q = task_row['요구 유량 (Q)']
                                             h = task_row['요구 양정 (H)']
@@ -895,10 +877,15 @@ if uploaded_file:
                                 
                                 rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model)
                                 
-                                if rec_str and rec_str.split(' ')[0] != model:
-                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = rec_str
+                                if rec_str:
+                                     # 현재 모델과 추천 모델이 다른 경우에만 업데이트
+                                     if str(rec_str).split(' ')[0] != str(model):
+                                         st.session_state.review_results_df.at[row_idx, '추천모델'] = rec_str
+                                     else:
+                                         st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
                                 else:
-                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음" if "❌" in current_status else ""
+                                     # 대안이 없으면 (None 리턴 시)
+                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음"
                                 
                                 progress_bar.progress((idx + 1) / total_items)
                             
@@ -942,9 +929,18 @@ if uploaded_file:
                     st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
                     
                     success_and_warn_df = results_df[~results_df['결과'].str.contains("❌")].copy()
+                    # 선정 불가 항목도 표시하고 싶다면 아래 줄을 주석 처리하고 results_df 전체를 쓰면 됨.
+                    # 하지만 보통 피벗은 '성공한 것'들의 분포를 보므로 여기서는 성공/보정 항목만 남김.
+                    # (사용자 요청에 따라 '선정 불가'도 보고 싶다면 로직 변경 가능)
                     
-                    if success_and_warn_df.empty:
-                        st.info("피벗 테이블에 표시할 '선정 가능' 또는 '보정 필요' 항목이 없습니다.")
+                    # 만약 '선정 불가'도 피벗에 포함하고 싶다면:
+                    # display_pivot_source = results_df.copy()
+                    
+                    # 여기서는 기존대로 성공+보정 항목만 표시 (선정 불가는 목록으로 확인)
+                    display_pivot_source = success_and_warn_df
+                    
+                    if display_pivot_source.empty:
+                        st.info("피벗 테이블에 표시할 항목이 없습니다.")
                     else:
                         try:
                             def format_motor(kw):
@@ -953,14 +949,21 @@ if uploaded_file:
                                 return f"({kw}kW)"
                             
                             def create_display_text(row):
-                                base_text = f"{row['선정 모델']} {format_motor(row['선정 모터(kW)'])}"
+                                # 모델명
+                                if row['선정 모델'] == "미선정":
+                                    base_text = "❌ 선정불가"
+                                else:
+                                    base_text = f"{row['선정 모델']} {format_motor(row['선정 모터(kW)'])}"
+                                
                                 extras = []
                                 
+                                # 유량 보정
                                 corr = row.get('보정률(%)', 0)
                                 if corr > 0:
                                     extras.append(f"💧 유량보정(100%): {corr:.1f}%")
                                     extras.append(f"💧 유량보정(150%): {corr:.1f}%")
                                 
+                                # 동력 초과
                                 p100 = row.get('동력초과(100%)', 0)
                                 p150 = row.get('동력초과(150%)', 0)
                                 
@@ -970,18 +973,21 @@ if uploaded_file:
                                     extras.append(f"⚡ 동력초과(100%): {p100_str}")
                                     extras.append(f"⚡ 동력초과(150%): {p150_str}")
                                 
+                                # 추천 정보 (추천 버튼 실행 후에만 값이 있음)
                                 rec = row.get('추천모델', '')
-                                if rec and rec != "대안 없음":
-                                     extras.append(f"💡 추천: {rec}")
+                                if rec == "대안 없음":
+                                    extras.append("(대안모델없음)")
+                                elif rec:
+                                    extras.append(f"💡 추천: {rec}")
 
                                 if extras:
                                     return base_text + "\n" + "\n".join(extras)
                                 return base_text
 
-                            success_and_warn_df['표시값'] = success_and_warn_df.apply(create_display_text, axis=1)
+                            display_pivot_source['표시값'] = display_pivot_source.apply(create_display_text, axis=1)
 
                             pivot_df = pd.pivot_table(
-                                success_and_warn_df, 
+                                display_pivot_source, 
                                 values='표시값', 
                                 index='요구 양정(H)', 
                                 columns='요구 유량(Q)', 
@@ -996,4 +1002,4 @@ if uploaded_file:
                         except Exception as e_pivot:
                             st.error(f"피벗 테이블 생성 중 오류 발생: {e_pivot}")
                             st.markdown("대신 원본 목록을 표시합니다:")
-                            st.dataframe(success_and_warn_df.set_index("선정 모델"), use_container_width=True)
+                            st.dataframe(display_pivot_source.set_index("선정 모델"), use_container_width=True)
