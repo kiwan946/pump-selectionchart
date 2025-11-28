@@ -425,6 +425,59 @@ def display_validation_output(model, validation_data, analysis_type, df_r, df_d,
     if model not in validation_data or validation_data[model]['summary'].empty:
         st.warning(f"'{model}' 모델에 대한 {analysis_type} 분석 결과가 없습니다.")
         return
+
+    model_data = validation_data[model]
+    model_summary_df = model_data['summary']
+    model_samples = model_data['samples']
+    base_col_name = f"기준 {analysis_type}"
+    
+    st.markdown(f"#### 분석 결과 요약 ({analysis_type})")
+    display_summary = model_summary_df.drop(columns=['_original_q']).set_index('모델명')
+    st.dataframe(display_summary, use_container_width=True)
+    
+    st.markdown(f"#### 모델별 상세 결과 시각화 ({analysis_type})")
+    fig_main = go.Figure()
+    numeric_cols = ["검증 유량(Q)", base_col_name, "95% CI 하한", "95% CI 상한"]
+    for col in numeric_cols: model_summary_df[col] = pd.to_numeric(model_summary_df[col], errors='coerce')
+    
+    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 상한'], fill=None, mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 상한'))
+    fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=model_summary_df['95% CI 하한'], fill='tonexty', mode='lines', line_color='rgba(0,100,80,0.2)', name='95% CI 하한'))
+    
+    model_d_df_vis = df_d[(df_d[m_d] == model) & (df_d[y_d_col].notna())]; test_ids_vis = model_d_df_vis[test_id_col].unique()
+    for test_id in test_ids_vis:
+        test_df_vis = model_d_df_vis[model_d_df_vis[test_id_col] == test_id].sort_values(by=q_d)
+        fig_main.add_trace(go.Scatter(x=test_df_vis[q_d], y=test_df_vis[y_d_col], mode='lines', line=dict(width=1, color='grey'), name=f'시험 {test_id}', opacity=0.5, showlegend=False))
+    
+    model_r_df_vis = df_r[(df_r[m_r] == model) & (df_r[y_r_col].notna())].sort_values(by=q_r)
+    fig_main.add_trace(go.Scatter(x=model_r_df_vis[q_r], y=model_r_df_vis[y_r_col], mode='lines+markers', line=dict(color='blue', width=3), name='Reference Curve'))
+    
+    if analysis_type == '양정':
+        upper_limit = model_summary_df[base_col_name] * 1.05
+        lower_limit = model_summary_df[base_col_name] * 0.95
+        fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=upper_limit, mode='lines', name='양정 상한 (+5%)', line=dict(color='orange', dash='dash')))
+        fig_main.add_trace(go.Scatter(x=model_summary_df['검증 유량(Q)'], y=lower_limit, mode='lines', name='양정 하한 (-5%)', line=dict(color='orange', dash='dash')))
+
+    valid_points = model_summary_df[model_summary_df['유효성'] == '✅ 유효']; invalid_points = model_summary_df[model_summary_df['유효성'] == '❌ 벗어남']
+    fig_main.add_trace(go.Scatter(x=valid_points['검증 유량(Q)'], y=valid_points[base_col_name], mode='markers', marker=dict(color='green', size=10, symbol='circle'), name='유효 포인트'))
+    fig_main.add_trace(go.Scatter(x=invalid_points['검증 유량(Q)'], y=invalid_points[base_col_name], mode='markers', marker=dict(color='red', size=10, symbol='x'), name='벗어남 포인트'))
+    
+    fig_main.update_layout(yaxis_title=analysis_type)
+    st.plotly_chart(fig_main, use_container_width=True)
+
+    with st.expander(f"검증 유량 지점별 {analysis_type} 데이터 분포표 보기"):
+        for idx, row in model_summary_df.iterrows():
+            q_point_original = row['_original_q']
+            samples = model_samples.get(q_point_original, [])
+            if not samples or row['시험 횟수(n)'] < 2: continue
+            q_point_str, ref_y_point, mean_y, std_y, n_samples = row['검증 유량(Q)'], float(row[base_col_name]), float(row['평균']), float(row['표준편차']), int(row['시험 횟수(n)'])
+            st.markdown(f"**Q = {q_point_str}**")
+            st.markdown(f"<small>평균: {mean_y:.2f} | 표준편차: {std_y:.2f} | n: {n_samples}</small>", unsafe_allow_html=True)
+            fig_dist = ff.create_distplot([samples], ['시험 데이터'], show_hist=False, show_rug=True)
+            fig_dist.add_vline(x=ref_y_point, line_width=2, line_dash="dash", line_color="red")
+            fig_dist.add_vline(x=mean_y, line_width=2, line_dash="dot", line_color="blue")
+            fig_dist.update_layout(title_text=None, xaxis_title=analysis_type, yaxis_title="밀도", height=300, margin=dict(l=20,r=20,t=5,b=20), showlegend=False)
+            st.plotly_chart(fig_dist, use_container_width=True, config={'displayModeBar': False})
+            st.markdown("---")
         
 # --- 메인 애플리케이션 로직 ---
 uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (reference data 시트 포함)", type=["xlsx", "xlsm"])
