@@ -421,6 +421,11 @@ def perform_validation_analysis(df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col
         all_results[model] = { 'summary': pd.DataFrame(model_summary), 'samples': interpolated_y_samples }
     return all_results
 
+def display_validation_output(model, validation_data, analysis_type, df_r, df_d, m_r, m_d, q_r, q_d, y_r_col, y_d_col, test_id_col):
+    if model not in validation_data or validation_data[model]['summary'].empty:
+        st.warning(f"'{model}' 모델에 대한 {analysis_type} 분석 결과가 없습니다.")
+        return
+        
 # --- 메인 애플리케이션 로직 ---
 uploaded_file = st.file_uploader("1. 기준 데이터 Excel 파일 업로드 (reference data 시트 포함)", type=["xlsx", "xlsm"])
 if uploaded_file:
@@ -669,8 +674,8 @@ if uploaded_file:
                             st.markdown("---"); st.markdown(f"### 모델: {model}")
                             col1, col2 = st.columns(2)
                             with col1:
-                                    st.subheader("📈 양정(Head) 유효성 검증")
-                                    display_validation_output(model, head_results, "양정", df_r, df_d, m_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d)
+                                st.subheader("📈 양정(Head) 유효성 검증")
+                                display_validation_output(model, head_results, "양정", df_r, df_d, m_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d)
                             with col2:
                                 if power_cols_exist:
                                     st.subheader("⚡ 축동력(Power) 유효성 검증")
