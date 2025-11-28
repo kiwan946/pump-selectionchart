@@ -669,8 +669,8 @@ if uploaded_file:
                             st.markdown("---"); st.markdown(f"### 모델: {model}")
                             col1, col2 = st.columns(2)
                             with col1:
-                                st.subheader("📈 양정(Head) 유효성 검증")
-                                display_validation_output(model, head_results, "양정", df_r, df_d, m_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d)
+                                    st.subheader("📈 양정(Head) 유효성 검증")
+                                    display_validation_output(model, head_results, "양정", df_r, df_d, m_r, m_d, q_col_total, q_d, h_col_total, h_d, test_id_col_d)
                             with col2:
                                 if power_cols_exist:
                                     st.subheader("⚡ 축동력(Power) 유효성 검증")
