@@ -7,8 +7,8 @@ from scipy.stats import t
 import re
 
 # 페이지 기본 설정
-st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.12", layout="wide")
-st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.12 (상세 결과 분리 표시)")
+st.set_page_config(page_title="Dooch XRL(F) 성능 곡선 뷰어 v2.13", layout="wide")
+st.title("📊 Dooch XRL(F) 성능 곡선 뷰어 v2.13 (상세 결과 분리 표시)")
 
 # --- 유틸리티 및 기본 분석 함수들 ---
 SERIES_ORDER = ["XRF3", "XRF5", "XRF10", "XRF15", "XRF20", "XRF32", "XRF45", "XRF64", "XRF95", "XRF125", "XRF155", "XRF185", "XRF215", "XRF255"]
@@ -912,7 +912,6 @@ if uploaded_file:
                 # (5) 결과 표시 및 심화 분석
                 if 'review_results_df' in st.session_state:
                     st.markdown("---")
-                    results_df = st.session_state.review_results_df
                     
                     # --------------------------------------------------------------
                     # [신규] 심화 분석 버튼 (전체 모델 대상 대안 추천)
@@ -921,6 +920,7 @@ if uploaded_file:
                     
                     if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행 (스마트 최적화)"):
                         with st.spinner("최적 모델 탐색 중... (합격 모델 건너뜀, 시리즈 최적화 적용)"):
+                            results_df = st.session_state.review_results_df
                             progress_bar = st.progress(0)
                             total_items = len(results_df)
                             
@@ -972,8 +972,7 @@ if uploaded_file:
                     all_failed_df = summary_source[summary_source['결과'].str.contains("❌")]
                     
                     # 4. [분리] 데이터 없음 vs 진짜 선정 오류
-                    # "모델 없음" 또는 "기준 데이터 오류" 텍스트가 '결과' 컬럼에 포함된 경우를 찾습니다.
-                    missing_condition = all_failed_df['결과'].str.contains("모델 없음|기준 데이터 오류")
+                    missing_condition = all_failed_df['결과'].str.contains("모델 없음") | all_failed_df['상세'].str.contains("Reference 데이터에 해당 모델이 없습니다")
                     
                     missing_df = all_failed_df[missing_condition]       # 데이터 없음 (❓)
                     real_failed_df = all_failed_df[~missing_condition]  # 진짜 선정 오류 (❌ - 성능 미달, 미선정 등)
@@ -987,7 +986,6 @@ if uploaded_file:
                     res_col2.metric("❌ 선정 오류", len(real_failed_df), delta_color="inverse")
                     res_col3.metric("⚠️ 보정 필요", len(warning_df), delta_color="off")
                     res_col4.metric("✅ 선정 가능", len(success_df))
-                    # '데이터 없음'이 0건이어도 0으로 표시됨
                     res_col5.metric("❓ 데이터 없음", len(missing_df), delta_color="off") 
                     
                     # -------------------------------------------------------------------------
@@ -1054,7 +1052,7 @@ if uploaded_file:
                                     base_text = f"{model_val} {format_motor(row['선정 모터(kW)'])}"
                                     
                                     # [데이터 없음 표시]
-                                    if "모델 없음" in result_val or "기준 데이터 오류" in result_val:
+                                    if "모델 없음" in result_val or "Reference 데이터에 해당 모델이 없습니다" in detail_val:
                                         return f"❓ {base_text}\n(데이터 없음)"
 
                                     if "❌" in result_val:
