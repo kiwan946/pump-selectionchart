@@ -962,8 +962,12 @@ if uploaded_file:
                     # [핵심 수정] 5단계 결과 분류 로직
                     # -------------------------------------------------------------------------
                     
+                    # -------------------------------------------------------------------------
+                    # [수정됨 v2.13.1] 5단계 결과 분류 로직 (데이터 오류 포함)
+                    # -------------------------------------------------------------------------
+                    
                     # 1. ✅ 선정 가능
-                    success_df = summary_source[summary_source['결과'] == "✅"]
+                    success_df = summary_source[summary_source['결과'].str.contains("✅")]
                     
                     # 2. ⚠️ 보정 필요 (❌나 ✅가 없는 경우)
                     warning_df = summary_source[~summary_source['결과'].str.contains("❌|✅")]
@@ -972,7 +976,12 @@ if uploaded_file:
                     all_failed_df = summary_source[summary_source['결과'].str.contains("❌")]
                     
                     # 4. [분리] 데이터 없음 vs 진짜 선정 오류
-                    missing_condition = all_failed_df['결과'].str.contains("모델 없음") | all_failed_df['상세'].str.contains("Reference 데이터에 해당 모델이 없습니다")
+                    # 수정: "모델 없음" 뿐만 아니라 "기준 데이터 오류"도 데이터 없음으로 분류
+                    missing_condition = (
+                        all_failed_df['결과'].str.contains("모델 없음") | 
+                        all_failed_df['결과'].str.contains("기준 데이터 오류") | 
+                        all_failed_df['상세'].str.contains("Reference 데이터에 해당 모델이 없습니다")
+                    )
                     
                     missing_df = all_failed_df[missing_condition]       # 데이터 없음 (❓)
                     real_failed_df = all_failed_df[~missing_condition]  # 진짜 선정 오류 (❌ - 성능 미달, 미선정 등)
@@ -1008,7 +1017,7 @@ if uploaded_file:
                          display_warn['대안'] = display_warn['추천모델'].apply(lambda x: f"💡 {x}" if x and str(x).lower() != 'nan' else "")
                          st.dataframe(display_warn.set_index("선정 모델"), use_container_width=True)
 
-                    st.markdown("#### ❓ 데이터 미보유 목록 (Reference 데이터 없음)")
+                    st.markdown("#### ❓ 데이터 미보유 목록 (Reference 데이터 없음/오류)")
                     if missing_df.empty:
                         st.info("Reference 데이터에 없는 모델은 발견되지 않았습니다.")
                     else:
@@ -1051,8 +1060,10 @@ if uploaded_file:
                                 else:
                                     base_text = f"{model_val} {format_motor(row['선정 모터(kW)'])}"
                                     
-                                    # [데이터 없음 표시]
-                                    if "모델 없음" in result_val or "Reference 데이터에 해당 모델이 없습니다" in detail_val:
+                                    # [수정됨] 데이터 없음/오류 표시 조건 추가
+                                    if ("모델 없음" in result_val or 
+                                        "기준 데이터 오류" in result_val or 
+                                        "Reference 데이터에 해당 모델이 없습니다" in detail_val):
                                         return f"❓ {base_text}\n(데이터 없음)"
 
                                     if "❌" in result_val:
