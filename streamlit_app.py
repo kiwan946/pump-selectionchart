@@ -959,22 +959,43 @@ if uploaded_file:
                     st.markdown("### 📊 검토 결과 요약")
                     results_df = st.session_state.review_results_df
                     
-                    # 결과 필터링
-                    failed_df = results_df[results_df['결과'].str.contains("❌")]
-                    warning_df = results_df[~results_df['결과'].str.contains("❌|✅")] 
+                    # -------------------------------------------------------------------------
+                    # [수정] 결과 필터링 및 데이터 없음(Missing) 분리 로직
+                    # -------------------------------------------------------------------------
+                    
+                    # 1. 선정 가능 (Success)
                     success_df = results_df[results_df['결과'] == "✅"]
                     
-                    res_col1, res_col2, res_col3, res_col4 = st.columns(4)
+                    # 2. 보정 필요 (Warning) - ❌나 ✅가 없는 경우 (보통 ⚠️)
+                    warning_df = results_df[~results_df['결과'].str.contains("❌|✅")]
+                    
+                    # 3. 전체 실패 (Failed) - ❌가 포함된 모든 경우
+                    all_failed_df = results_df[results_df['결과'].str.contains("❌")]
+                    
+                    # 4. [분리] 데이터 없음 (Missing) vs 진짜 오류 (Real Failed)
+                    # 상세 메시지에 특정 문구가 포함되어 있는지 확인
+                    missing_condition = all_failed_df['상세'].astype(str).str.contains("Reference 데이터에 해당 모델이 없습니다")
+                    
+                    missing_df = all_failed_df[missing_condition]       # 데이터 없음
+                    real_failed_df = all_failed_df[~missing_condition]  # 진짜 선정 오류 (성능 미달 등)
+                    
+                    # 5. 지표 표시 (5개 컬럼)
+                    res_col1, res_col2, res_col3, res_col4, res_col5 = st.columns(5)
                     res_col1.metric("총 검토 항목", len(results_df))
-                    res_col2.metric("❌ 선정 오류", len(failed_df), delta_color="inverse")
+                    res_col2.metric("❌ 선정 오류", len(real_failed_df), delta_color="inverse")
                     res_col3.metric("⚠️ 보정 필요", len(warning_df), delta_color="off")
                     res_col4.metric("✅ 선정 가능", len(success_df))
+                    res_col5.metric("❓ 데이터 없음", len(missing_df), delta_color="off") # 회색(off) 또는 inverse
                     
-                    st.markdown("#### ❌ 선정 오류 목록 (대안 추천 포함)")
-                    if failed_df.empty:
-                        st.info("선정 오류로 판단된 항목이 없습니다.")
+                    # -------------------------------------------------------------------------
+                    # 테이블 표시 영역
+                    # -------------------------------------------------------------------------
+
+                    st.markdown("#### ❌ 선정 오류 목록 (성능 미달 / 대안 추천 포함)")
+                    if real_failed_df.empty:
+                        st.info("성능 미달로 인한 선정 오류 항목이 없습니다.")
                     else:
-                        display_failed = failed_df.copy()
+                        display_failed = real_failed_df.copy()
                         display_failed['대안'] = display_failed['추천모델'].apply(lambda x: f"💡 {x}" if x else "")
                         st.dataframe(display_failed.set_index("선정 모델"), use_container_width=True)
                     
@@ -985,6 +1006,12 @@ if uploaded_file:
                          display_warn = warning_df.copy()
                          display_warn['대안'] = display_warn['추천모델'].apply(lambda x: f"💡 {x}" if x else "")
                          st.dataframe(display_warn.set_index("선정 모델"), use_container_width=True)
+
+                    st.markdown("#### ❓ 데이터 미보유 목록 (Reference 데이터 없음)")
+                    if missing_df.empty:
+                        st.info("Reference 데이터에 없는 모델은 발견되지 않았습니다.")
+                    else:
+                        st.dataframe(missing_df.set_index("선정 모델"), use_container_width=True)
                         
                     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
                     # ★ [최종 수정] 전체 검토 결과 피벗 테이블 (상세 정보 포함) ★
@@ -1013,6 +1040,7 @@ if uploaded_file:
                                     rec_val = str(rec_raw).strip()
 
                                 result_val = str(row['결과'])
+                                detail_val = str(row['상세']) # 데이터 없음 확인용
 
                                 # [Case 1] 엑셀 공란 (미선정)인 경우
                                 if "미선정" in model_val:
@@ -1030,6 +1058,10 @@ if uploaded_file:
                                 else:
                                     base_text = f"{model_val} {format_motor(row['선정 모터(kW)'])}"
                                     
+                                    # [신규] 데이터 없음 케이스 별도 표시
+                                    if "Reference 데이터에 해당 모델이 없습니다" in detail_val:
+                                        return f"❓ {base_text}\n(데이터 없음)"
+
                                     # '❌ 사용 불가' 등의 결과가 있으면 앞에 표시
                                     if "❌" in result_val:
                                         base_text = f"❌ {base_text}"
