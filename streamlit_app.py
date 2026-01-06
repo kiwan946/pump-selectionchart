@@ -909,192 +909,192 @@ if uploaded_file:
                                 st.success("1차 검토 완료! 상세 분석을 원하시면 아래 버튼을 누르세요.")
                                 st.rerun()
 
-# (5) 결과 표시 및 심화 분석
-                if 'review_results_df' in st.session_state:
-                    st.markdown("---")
-                    results_df = st.session_state.review_results_df
-                    
-                    # --------------------------------------------------------------
-                    # [신규] 심화 분석 버튼 (전체 모델 대상 대안 추천)
-                    # --------------------------------------------------------------
-                    st.info("👇 아래 버튼을 누르면 AI가 '선정 오류' 및 '보정 필요' 항목에 대해 더 나은 대안 모델을 탐색합니다. (합격 모델은 자동 건너뜀)")
-                    
-                    if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행 (스마트 최적화)"):
-                        with st.spinner("최적 모델 탐색 중... (합격 모델 건너뜀, 시리즈 최적화 적용)"):
-                            progress_bar = st.progress(0)
-                            total_items = len(results_df)
-                            
-                            for idx, row_idx in enumerate(results_df.index):
-                                current_status = results_df.at[row_idx, '결과']
+                                        # (5) 결과 표시 및 심화 분석
+                            if 'review_results_df' in st.session_state:
+                                st.markdown("---")
+                                results_df = st.session_state.review_results_df
                                 
-                                # [최적화 1] 이미 완벽하면(✅) 건너뛰기
-                                if "✅" in current_status:
-                                    st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
-                                    progress_bar.progress((idx + 1) / total_items)
-                                    continue
-
-                                # [최적화 2] 대안 탐색
-                                q = results_df.at[row_idx, '요구 유량(Q)']
-                                h = results_df.at[row_idx, '요구 양정(H)']
-                                model = results_df.at[row_idx, '선정 모델']
+                                # --------------------------------------------------------------
+                                # [신규] 심화 분석 버튼 (전체 모델 대상 대안 추천)
+                                # --------------------------------------------------------------
+                                st.info("👇 아래 버튼을 누르면 AI가 '선정 오류' 및 '보정 필요' 항목에 대해 더 나은 대안 모델을 탐색합니다. (합격 모델은 자동 건너뜀)")
                                 
-                                rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model)
+                                if st.button("🕵️ 전체 항목에 대한 대안 모델 추천 실행 (스마트 최적화)"):
+                                    with st.spinner("최적 모델 탐색 중... (합격 모델 건너뜀, 시리즈 최적화 적용)"):
+                                        progress_bar = st.progress(0)
+                                        total_items = len(results_df)
+                                        
+                                        for idx, row_idx in enumerate(results_df.index):
+                                            current_status = results_df.at[row_idx, '결과']
+                                            
+                                            # [최적화 1] 이미 완벽하면(✅) 건너뛰기
+                                            if "✅" in current_status:
+                                                st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
+                                                progress_bar.progress((idx + 1) / total_items)
+                                                continue
+            
+                                            # [최적화 2] 대안 탐색
+                                            q = results_df.at[row_idx, '요구 유량(Q)']
+                                            h = results_df.at[row_idx, '요구 양정(H)']
+                                            model = results_df.at[row_idx, '선정 모델']
+                                            
+                                            rec_str = find_recommendation(df_r, m_r, q_col_total, h_col_total, k_col_total, q, h, model)
+                                            
+                                            if rec_str:
+                                                 if str(rec_str).split(' ')[0] != str(model):
+                                                      st.session_state.review_results_df.at[row_idx, '추천모델'] = str(rec_str)
+                                                 else:
+                                                      st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
+                                            else:
+                                                 st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음"
+                                            
+                                            progress_bar.progress((idx + 1) / total_items)
+                                        
+                                        st.success("전체 항목 분석 및 추천 완료!")
+                                        st.rerun()
+            
+            
+                                st.markdown("### 📊 검토 결과 요약")
+                                # 데이터프레임 복사
+                                summary_source = st.session_state.review_results_df
                                 
-                                if rec_str:
-                                     if str(rec_str).split(' ')[0] != str(model):
-                                          st.session_state.review_results_df.at[row_idx, '추천모델'] = str(rec_str)
-                                     else:
-                                          st.session_state.review_results_df.at[row_idx, '추천모델'] = ""
+                                # -------------------------------------------------------------------------
+                                # [핵심 수정] 5단계 결과 분류 로직
+                                # -------------------------------------------------------------------------
+                                
+                                # 1. ✅ 선정 가능
+                                success_df = summary_source[summary_source['결과'] == "✅"]
+                                
+                                # 2. ⚠️ 보정 필요 (❌나 ✅가 없는 경우)
+                                warning_df = summary_source[~summary_source['결과'].str.contains("❌|✅")]
+                                
+                                # 3. 전체 실패 (❌가 포함된 모든 경우)
+                                all_failed_df = summary_source[summary_source['결과'].str.contains("❌")]
+                                
+                                # 4. [분리] 데이터 없음 vs 진짜 선정 오류
+                                # "모델 없음" 또는 "기준 데이터 오류" 텍스트가 '결과' 컬럼에 포함된 경우를 찾습니다.
+                                missing_condition = all_failed_df['결과'].str.contains("모델 없음|기준 데이터 오류")
+                                
+                                missing_df = all_failed_df[missing_condition]       # 데이터 없음 (❓)
+                                real_failed_df = all_failed_df[~missing_condition]  # 진짜 선정 오류 (❌ - 성능 미달, 미선정 등)
+                                
+                                # -------------------------------------------------------------------------
+                                # [UI 수정] 5개 컬럼으로 메트릭 표시
+                                # -------------------------------------------------------------------------
+                                res_col1, res_col2, res_col3, res_col4, res_col5 = st.columns(5)
+                                
+                                res_col1.metric("총 검토 항목", len(summary_source))
+                                res_col2.metric("❌ 선정 오류", len(real_failed_df), delta_color="inverse")
+                                res_col3.metric("⚠️ 보정 필요", len(warning_df), delta_color="off")
+                                res_col4.metric("✅ 선정 가능", len(success_df))
+                                # '데이터 없음'이 0건이어도 0으로 표시됨
+                                res_col5.metric("❓ 데이터 없음", len(missing_df), delta_color="off") 
+                                
+                                # -------------------------------------------------------------------------
+                                # 상세 테이블 표시 영역
+                                # -------------------------------------------------------------------------
+            
+                                st.markdown("#### ❌ 선정 오류 목록 (성능 미달 / 대안 추천 포함)")
+                                if real_failed_df.empty:
+                                    st.info("성능 미달로 인한 선정 오류 항목이 없습니다.")
                                 else:
-                                     st.session_state.review_results_df.at[row_idx, '추천모델'] = "대안 없음"
+                                    display_failed = real_failed_df.copy()
+                                    display_failed['대안'] = display_failed['추천모델'].apply(lambda x: f"💡 {x}" if x and str(x).lower() != 'nan' else "")
+                                    st.dataframe(display_failed.set_index("선정 모델"), use_container_width=True)
                                 
-                                progress_bar.progress((idx + 1) / total_items)
-                            
-                            st.success("전체 항목 분석 및 추천 완료!")
-                            st.rerun()
-
-
-                    st.markdown("### 📊 검토 결과 요약")
-                    # 데이터프레임 복사
-                    summary_source = st.session_state.review_results_df
-                    
-                    # -------------------------------------------------------------------------
-                    # [핵심 수정] 5단계 결과 분류 로직
-                    # -------------------------------------------------------------------------
-                    
-                    # 1. ✅ 선정 가능
-                    success_df = summary_source[summary_source['결과'] == "✅"]
-                    
-                    # 2. ⚠️ 보정 필요 (❌나 ✅가 없는 경우)
-                    warning_df = summary_source[~summary_source['결과'].str.contains("❌|✅")]
-                    
-                    # 3. 전체 실패 (❌가 포함된 모든 경우)
-                    all_failed_df = summary_source[summary_source['결과'].str.contains("❌")]
-                    
-                    # 4. [분리] 데이터 없음 vs 진짜 선정 오류
-                    # "모델 없음" 또는 "기준 데이터 오류" 텍스트가 '결과' 컬럼에 포함된 경우를 찾습니다.
-                    missing_condition = all_failed_df['결과'].str.contains("모델 없음|기준 데이터 오류")
-                    
-                    missing_df = all_failed_df[missing_condition]       # 데이터 없음 (❓)
-                    real_failed_df = all_failed_df[~missing_condition]  # 진짜 선정 오류 (❌ - 성능 미달, 미선정 등)
-                    
-                    # -------------------------------------------------------------------------
-                    # [UI 수정] 5개 컬럼으로 메트릭 표시
-                    # -------------------------------------------------------------------------
-                    res_col1, res_col2, res_col3, res_col4, res_col5 = st.columns(5)
-                    
-                    res_col1.metric("총 검토 항목", len(summary_source))
-                    res_col2.metric("❌ 선정 오류", len(real_failed_df), delta_color="inverse")
-                    res_col3.metric("⚠️ 보정 필요", len(warning_df), delta_color="off")
-                    res_col4.metric("✅ 선정 가능", len(success_df))
-                    # '데이터 없음'이 0건이어도 0으로 표시됨
-                    res_col5.metric("❓ 데이터 없음", len(missing_df), delta_color="off") 
-                    
-                    # -------------------------------------------------------------------------
-                    # 상세 테이블 표시 영역
-                    # -------------------------------------------------------------------------
-
-                    st.markdown("#### ❌ 선정 오류 목록 (성능 미달 / 대안 추천 포함)")
-                    if real_failed_df.empty:
-                        st.info("성능 미달로 인한 선정 오류 항목이 없습니다.")
-                    else:
-                        display_failed = real_failed_df.copy()
-                        display_failed['대안'] = display_failed['추천모델'].apply(lambda x: f"💡 {x}" if x and str(x).lower() != 'nan' else "")
-                        st.dataframe(display_failed.set_index("선정 모델"), use_container_width=True)
-                    
-                    st.markdown("#### ⚠️ 보정 필요 목록")
-                    if warning_df.empty:
-                        st.info("유량 보정이 필요한 항목이 없습니다.")
-                    else:
-                         display_warn = warning_df.copy()
-                         display_warn['대안'] = display_warn['추천모델'].apply(lambda x: f"💡 {x}" if x and str(x).lower() != 'nan' else "")
-                         st.dataframe(display_warn.set_index("선정 모델"), use_container_width=True)
-
-                    st.markdown("#### ❓ 데이터 미보유 목록 (Reference 데이터 없음)")
-                    if missing_df.empty:
-                        st.info("Reference 데이터에 없는 모델은 발견되지 않았습니다.")
-                    else:
-                        st.dataframe(missing_df.set_index("선정 모델"), use_container_width=True)
-                        
-                    # ★★★ 피벗 테이블 영역 ★★★
-                    st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
-                    
-                    pivot_source = summary_source.copy()
-                    
-                    if pivot_source.empty:
-                        st.info("피벗 테이블에 표시할 항목이 없습니다.")
-                    else:
-                        try:
-                            def format_motor(kw):
-                                if pd.isna(kw): return "(?kW)"
-                                if kw == int(kw): return f"({int(kw)}kW)"
-                                return f"({kw}kW)"
-                            
-                            def create_display_text(row):
-                                model_val = str(row['선정 모델']).strip()
-                                
-                                rec_raw = row.get('추천모델', '')
-                                if pd.isna(rec_raw) or str(rec_raw).lower() == 'nan' or str(rec_raw).lower() == 'none':
-                                    rec_val = ""
+                                st.markdown("#### ⚠️ 보정 필요 목록")
+                                if warning_df.empty:
+                                    st.info("유량 보정이 필요한 항목이 없습니다.")
                                 else:
-                                    rec_val = str(rec_raw).strip()
-
-                                result_val = str(row['결과'])
-                                detail_val = str(row['상세']) 
-
-                                # [Case 1] 엑셀 공란
-                                if "미선정" in model_val:
-                                    base_text = "❌ 선정불가"
-                                    if rec_val == "대안 없음": return base_text + "\n(대안모델 없음)"
-                                    elif rec_val: return base_text + f"\n💡 추천: {rec_val}"
-                                    else: return base_text
-
-                                # [Case 2] 모델 기입됨
+                                     display_warn = warning_df.copy()
+                                     display_warn['대안'] = display_warn['추천모델'].apply(lambda x: f"💡 {x}" if x and str(x).lower() != 'nan' else "")
+                                     st.dataframe(display_warn.set_index("선정 모델"), use_container_width=True)
+            
+                                st.markdown("#### ❓ 데이터 미보유 목록 (Reference 데이터 없음)")
+                                if missing_df.empty:
+                                    st.info("Reference 데이터에 없는 모델은 발견되지 않았습니다.")
                                 else:
-                                    base_text = f"{model_val} {format_motor(row['선정 모터(kW)'])}"
+                                    st.dataframe(missing_df.set_index("선정 모델"), use_container_width=True)
                                     
-                                    # [데이터 없음 표시]
-                                    if "모델 없음" in result_val or "기준 데이터 오류" in result_val:
-                                        return f"❓ {base_text}\n(데이터 없음)"
-
-                                    if "❌" in result_val:
-                                        base_text = f"❌ {base_text}"
-
-                                    extras = []
-                                    p100 = row.get('동력초과(100%)', 0)
-                                    p150 = row.get('동력초과(150%)', 0)
-                                    corr = row.get('보정률(%)', 0)
-
-                                    info_100 = []
-                                    if p100 > 100: info_100.append(f"축동력 {p100-100:.1f}% 초과")
-                                    if corr > 0: info_100.append(f"유량보정 {corr:.1f}%")
-                                    if info_100: extras.append(f"[100%] " + " / ".join(info_100))
-
-                                    info_150 = []
-                                    if p150 > 100: info_150.append(f"축동력 {p150-100:.1f}% 초과")
-                                    if corr > 0: info_150.append(f"유량보정 {corr:.1f}%")
-                                    if info_150: extras.append(f"[150%] " + " / ".join(info_150))
+                                # ★★★ 피벗 테이블 영역 ★★★
+                                st.markdown("#### ✅ 전체 검토 결과 (피벗 테이블)")
+                                
+                                pivot_source = summary_source.copy()
+                                
+                                if pivot_source.empty:
+                                    st.info("피벗 테이블에 표시할 항목이 없습니다.")
+                                else:
+                                    try:
+                                        def format_motor(kw):
+                                            if pd.isna(kw): return "(?kW)"
+                                            if kw == int(kw): return f"({int(kw)}kW)"
+                                            return f"({kw}kW)"
+                                        
+                                        def create_display_text(row):
+                                            model_val = str(row['선정 모델']).strip()
+                                            
+                                            rec_raw = row.get('추천모델', '')
+                                            if pd.isna(rec_raw) or str(rec_raw).lower() == 'nan' or str(rec_raw).lower() == 'none':
+                                                rec_val = ""
+                                            else:
+                                                rec_val = str(rec_raw).strip()
+            
+                                            result_val = str(row['결과'])
+                                            detail_val = str(row['상세']) 
+            
+                                            # [Case 1] 엑셀 공란
+                                            if "미선정" in model_val:
+                                                base_text = "❌ 선정불가"
+                                                if rec_val == "대안 없음": return base_text + "\n(대안모델 없음)"
+                                                elif rec_val: return base_text + f"\n💡 추천: {rec_val}"
+                                                else: return base_text
+            
+                                            # [Case 2] 모델 기입됨
+                                            else:
+                                                base_text = f"{model_val} {format_motor(row['선정 모터(kW)'])}"
+                                                
+                                                # [데이터 없음 표시]
+                                                if "모델 없음" in result_val or "기준 데이터 오류" in result_val:
+                                                    return f"❓ {base_text}\n(데이터 없음)"
+            
+                                                if "❌" in result_val:
+                                                    base_text = f"❌ {base_text}"
+            
+                                                extras = []
+                                                p100 = row.get('동력초과(100%)', 0)
+                                                p150 = row.get('동력초과(150%)', 0)
+                                                corr = row.get('보정률(%)', 0)
+            
+                                                info_100 = []
+                                                if p100 > 100: info_100.append(f"축동력 {p100-100:.1f}% 초과")
+                                                if corr > 0: info_100.append(f"유량보정 {corr:.1f}%")
+                                                if info_100: extras.append(f"[100%] " + " / ".join(info_100))
+            
+                                                info_150 = []
+                                                if p150 > 100: info_150.append(f"축동력 {p150-100:.1f}% 초과")
+                                                if corr > 0: info_150.append(f"유량보정 {corr:.1f}%")
+                                                if info_150: extras.append(f"[150%] " + " / ".join(info_150))
+                                                
+                                                if rec_val == "대안 없음": extras.append("(대안모델 없음)")
+                                                elif rec_val: extras.append(f"💡 추천: {rec_val}")
+            
+                                                if extras: return base_text + "\n" + "\n".join(extras)
+                                                return base_text
+            
+                                        pivot_source['표시값'] = pivot_source.apply(create_display_text, axis=1)
+            
+                                        pivot_df = pd.pivot_table(
+                                            pivot_source, 
+                                            values='표시값', 
+                                            index='요구 양정(H)', 
+                                            columns='요구 유량(Q)', 
+                                            aggfunc='first', 
+                                            fill_value="❌ 선정불가" 
+                                        )
+                                        
+                                        pivot_df = pivot_df.sort_index(ascending=False)
+                                        st.dataframe(pivot_df, use_container_width=True, height=800)
                                     
-                                    if rec_val == "대안 없음": extras.append("(대안모델 없음)")
-                                    elif rec_val: extras.append(f"💡 추천: {rec_val}")
-
-                                    if extras: return base_text + "\n" + "\n".join(extras)
-                                    return base_text
-
-                            pivot_source['표시값'] = pivot_source.apply(create_display_text, axis=1)
-
-                            pivot_df = pd.pivot_table(
-                                pivot_source, 
-                                values='표시값', 
-                                index='요구 양정(H)', 
-                                columns='요구 유량(Q)', 
-                                aggfunc='first', 
-                                fill_value="❌ 선정불가" 
-                            )
-                            
-                            pivot_df = pivot_df.sort_index(ascending=False)
-                            st.dataframe(pivot_df, use_container_width=True, height=800)
-                        
-                        except Exception as e_pivot:
-                            st.error(f"피벗 테이블 생성 중 오류 발생: {e_pivot}")
-                            st.dataframe(pivot_source.set_index("선정 모델"), use_container_width=True)
+                                    except Exception as e_pivot:
+                                        st.error(f"피벗 테이블 생성 중 오류 발생: {e_pivot}")
+                                        st.dataframe(pivot_source.set_index("선정 모델"), use_container_width=True)
