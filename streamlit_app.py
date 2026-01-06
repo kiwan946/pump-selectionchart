@@ -98,6 +98,8 @@ def analyze_operating_point(df, models, target_q, target_h, m_col, q_col, h_col,
     return pd.DataFrame(results)
 
 # [Total 탭] 단일 운전점 분석 (소방 - 단순 래퍼)
+# [Total 탭] 단일 운전점 분석 (소방 - 단순 래퍼)
+# [수정됨 v2.13.3] 선정 불가능한 모델 필터링 추가
 def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col, k_col):
     if target_q <= 0 or target_h <= 0: return pd.DataFrame()
     results = []
@@ -106,6 +108,10 @@ def analyze_fire_pump_point(df, models, target_q, target_h, m_col, q_col, h_col,
         if len(model_df) < 2: continue
         
         res_dict = _batch_analyze_fire_point(model_df, target_q, target_h, q_col, h_col, k_col, STANDARD_MOTORS)
+        
+        # [수정] 선정 불가능("❌")한 모델은 결과 목록에서 제외
+        if "❌" in res_dict['선정 가능']:
+            continue
         
         row = {
             "모델명": model,
